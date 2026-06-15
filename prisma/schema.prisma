@@ -4,23 +4,57 @@
 // Get a free hosted Postgres database in seconds: `npx create-db`
 
 generator client {
-  provider = "prisma-client"
+  provider = "prisma-client-js"
   output   = "../lib/generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
-  id       String  @id @default(uuid())
-  tenantId String
-  name     String
-  email    String  @unique
-  role     String  // "admin", "purchasing", "warehouse", "finance"
-  isActive Boolean @default(true)
+  id        String  @id @default(uuid())
+  tenantId  String
+  name      String
+  email     String  @unique
+  password  String
+  role      String  // "admin", "purchasing", "warehouse", "finance"
+  isActive  Boolean @default(true)
 
   tenant   Tenant  @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+}
+
+model Vendor {
+  id          String  @id @default(uuid())
+  tenantId    String
+  code        String
+  name        String
+  contactName String?
+  phone       String?
+  email       String?
+  address     String?
+  paymentTerms String?
+  isActive    Boolean @default(true)
+
+  tenant      Tenant  @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+}
+
+model Item {
+  id          String  @id @default(uuid())
+  tenantId    String
+  code        String
+  name        String
+  description String?
+  uom         String
+  category    String?
+  isActive    Boolean @default(true)
+
+  tenant      Tenant  @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId])
 }
@@ -32,5 +66,6 @@ model Tenant{
   plan      String    @default("free")
   createdAt DateTime  @default(now())   
   users     User[]
+  Vendor    Vendor[]
+  Item      Item[]
 }
-
