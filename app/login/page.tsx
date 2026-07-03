@@ -1,44 +1,61 @@
 // app/login/page.tsx
-"use client"
+"use client";
 
-import { useState } from "react"
-import { signIn } from "next-auth/react"
-import { useRouter } from "next/navigation"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { useState, useEffect } from "react";
+import { signIn, useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
 export default function LoginPage() {
-  const router = useRouter()
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
-  const [error, setError] = useState("")
-  const [loading, setLoading] = useState(false)
+  const router = useRouter();
+  const { data: session, status } = useSession();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  // Jika user sudah punya session aktif, langsung redirect ke dashboard
+  // Ini mencegah user yang sudah login mengakses halaman login lagi
+  useEffect(() => {
+    if (status === "authenticated") {
+      router.push("/dashboard");
+    }
+  }, [status, router]);
+
+  // Selama status session belum diketahui atau sudah authenticated,
+  // jangan render apapun — mencegah flash tampilan login sebelum redirect
+  if (status === "loading" || status === "authenticated") {
+    return null;
+  }
 
   async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setLoading(true)
-    setError("")
+    e.preventDefault();
+    setLoading(true);
+    setError("");
 
-    // Panggil signIn dari NextAuth dengan provider "credentials"
-    // redirect: false agar kita bisa handle error sendiri tanpa full page reload
     const result = await signIn("credentials", {
       email,
       password,
       redirect: false,
-    })
+    });
 
-    setLoading(false)
+    setLoading(false);
 
     if (result?.error) {
-      // NextAuth mengembalikan error jika authorize() return null
-      setError("Email atau password salah.")
-      return
+      setError("Email atau password salah.");
+      return;
     }
 
-    // Login berhasil → arahkan ke dashboard
-    router.push("/dashboard")
+    router.push("/dashboard");
   }
 
   return (
@@ -78,10 +95,7 @@ export default function LoginPage() {
               />
             </div>
 
-            {/* Tampilkan pesan error jika login gagal */}
-            {error && (
-              <p className="text-sm text-destructive">{error}</p>
-            )}
+            {error && <p className="text-sm text-destructive">{error}</p>}
 
             <Button type="submit" disabled={loading} className="w-full mt-1">
               {loading ? "Signing in..." : "Sign in"}
@@ -94,5 +108,5 @@ export default function LoginPage() {
         </CardContent>
       </Card>
     </div>
-  )
+  );
 }
