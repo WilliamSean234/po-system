@@ -13,6 +13,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model ApprovalConfig {
+  id             String   @id @default(uuid())
+  tenantId       String
+  level          Int      // urutan approval: 1, 2, 3, dst
+  minAmount      Decimal  @db.Decimal(15, 2) // batas bawah nominal PO yang butuh level ini
+  maxAmount      Decimal?  @db.Decimal(15, 2) // batas atas nominal PO yang butuh level ini
+  approverUserId String   // user yang berhak approve di level ini
+
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  approver User   @relation(fields: [approverUserId], references: [id])
+
+  @@index([tenantId])
+}
+
 model User {
   id        String  @id @default(uuid())
   tenantId  String
@@ -25,6 +39,7 @@ model User {
   tenant   Tenant  @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId])
+  approvalConfigs ApprovalConfig[] // relasi balik: user ini approver di config mana aja
 }
 
 model Vendor {
@@ -44,7 +59,7 @@ model Vendor {
   tenant       Tenant    @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId])
-  @@unique([tenantId, code])   // code unik PER TENANT, bukan global
+  @@unique([tenantId, code])   // code unik PER TENANT, bukan global  
 }
 
 model Item {
@@ -74,4 +89,5 @@ model Tenant{
   users     User[]
   Vendor    Vendor[]
   Item      Item[]
+  approvalConfigs ApprovalConfig[] 
 }
