@@ -28,20 +28,23 @@ model User {
 }
 
 model Vendor {
-  id          String  @id @default(uuid())
-  tenantId    String
-  code        String
-  name        String
-  contactName String?
-  phone       String?
-  email       String?
-  address     String?
+  id           String    @id @default(uuid())
+  tenantId     String
+  code         String
+  name         String
+  contactName  String?
+  phone        String?
+  email        String?
+  address      String?
   paymentTerms String?
-  isActive    Boolean @default(true)
+  isActive     Boolean   @default(true)
+  isDeleted    Boolean   @default(false)
+  deletedAt    DateTime?
 
-  tenant      Tenant  @relation(fields: [tenantId], references: [id])
+  tenant       Tenant    @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId])
+  @@unique([tenantId, code])   // code unik PER TENANT, bukan global
 }
 
 model Item {
@@ -53,10 +56,13 @@ model Item {
   uom         String
   category    String?
   isActive    Boolean @default(true)
+  isDeleted   Boolean   @default(false)
+  deletedAt   DateTime?
 
   tenant      Tenant  @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId])
+  @@unique([tenantId, code])   // code unik PER TENANT, bukan global
 }
 
 model Tenant{

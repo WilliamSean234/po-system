@@ -16,7 +16,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Tombol logout — memanggil signOut dari NextAuth */}
-          {/* Setelah logout, session dihapus dan user di-redirect ke /login */}
+          {/* Setelah , session dihapus dan user di-redirect ke /login */}
           <Button
             variant="outline"
             onClick={() => signOut({ redirectTo: "/login" })}
