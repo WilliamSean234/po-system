@@ -1,8 +1,8 @@
 // prisma/seed.ts
-import { PrismaClient } from "../lib/generated/prisma"
-import bcrypt from "bcryptjs"
+import { PrismaClient } from "../lib/generated/prisma";
+import bcrypt from "bcryptjs";
 
-const prisma = new PrismaClient()
+const prisma = new PrismaClient();
 
 async function main() {
   // ── 1. TENANT ──────────────────────────────────────────────
@@ -14,11 +14,11 @@ async function main() {
       slug: "demo-company",
       plan: "free",
     },
-  })
-  console.log("✅ Tenant:", tenant.name)
+  });
+  console.log("✅ Tenant:", tenant.name);
 
   // ── 2. USERS ───────────────────────────────────────────────
-  const hashedPassword = await bcrypt.hash("password123", 10)
+  const hashedPassword = await bcrypt.hash("password123", 10);
 
   const users = await Promise.all([
     prisma.user.upsert({
@@ -65,16 +65,15 @@ async function main() {
         role: "finance",
       },
     }),
-  ])
-  console.log("✅ Users:", users.map((u) => u.email).join(", "))
+  ]);
+  console.log("✅ Users:", users.map((u) => u.email).join(", "));
 
   // ── 3. VENDORS ─────────────────────────────────────────────
   const vendors = await Promise.all([
     prisma.vendor.upsert({
-      where: { id: "vendor-001" },
+      where: { tenantId_code: { tenantId: tenant.id, code: "VND-001" } },
       update: {},
       create: {
-        id: "vendor-001",
         tenantId: tenant.id,
         code: "VND-001",
         name: "PT Sumber Makmur",
@@ -86,10 +85,9 @@ async function main() {
       },
     }),
     prisma.vendor.upsert({
-      where: { id: "vendor-002" },
+      where: { tenantId_code: { tenantId: tenant.id, code: "VND-002" } },
       update: {},
       create: {
-        id: "vendor-002",
         tenantId: tenant.id,
         code: "VND-002",
         name: "CV Jaya Abadi",
@@ -101,10 +99,9 @@ async function main() {
       },
     }),
     prisma.vendor.upsert({
-      where: { id: "vendor-003" },
+      where: { tenantId_code: { tenantId: tenant.id, code: "VND-003" } },
       update: {},
       create: {
-        id: "vendor-003",
         tenantId: tenant.id,
         code: "VND-003",
         name: "Toko Teknik Maju",
@@ -115,16 +112,15 @@ async function main() {
         paymentTerms: "COD",
       },
     }),
-  ])
-  console.log("✅ Vendors:", vendors.map((v) => v.name).join(", "))
+  ]);
+  console.log("✅ Vendors:", vendors.map((v) => v.name).join(", "));
 
   // ── 4. ITEMS ───────────────────────────────────────────────
   const items = await Promise.all([
     prisma.item.upsert({
-      where: { id: "item-001" },
+      where: { tenantId_code: { tenantId: tenant.id, code: "ITM-001" } },
       update: {},
       create: {
-        id: "item-001",
         tenantId: tenant.id,
         code: "ITM-001",
         name: "Kertas HVS A4 80gsm",
@@ -134,10 +130,9 @@ async function main() {
       },
     }),
     prisma.item.upsert({
-      where: { id: "item-002" },
+      where: { tenantId_code: { tenantId: tenant.id, code: "ITM-002" } },
       update: {},
       create: {
-        id: "item-002",
         tenantId: tenant.id,
         code: "ITM-002",
         name: "Tinta Printer Hitam",
@@ -147,10 +142,9 @@ async function main() {
       },
     }),
     prisma.item.upsert({
-      where: { id: "item-003" },
+      where: { tenantId_code: { tenantId: tenant.id, code: "ITM-003" } },
       update: {},
       create: {
-        id: "item-003",
         tenantId: tenant.id,
         code: "ITM-003",
         name: "Meja Kantor",
@@ -160,10 +154,9 @@ async function main() {
       },
     }),
     prisma.item.upsert({
-      where: { id: "item-004" },
+      where: { tenantId_code: { tenantId: tenant.id, code: "ITM-004" } },
       update: {},
       create: {
-        id: "item-004",
         tenantId: tenant.id,
         code: "ITM-004",
         name: "Laptop Core i5",
@@ -172,20 +165,20 @@ async function main() {
         category: "Elektronik",
       },
     }),
-  ])
-  console.log("✅ Items:", items.map((i) => i.name).join(", "))
+  ]);
+  console.log("✅ Items:", items.map((i) => i.name).join(", "));
 
-  console.log("\n🎉 Seed selesai!")
-  console.log("─────────────────────────────")
-  console.log("Login dengan:")
-  console.log("  Email    : admin@demo.com")
-  console.log("  Password : password123")
-  console.log("─────────────────────────────")
+  console.log("\n🎉 Seed selesai!");
+  console.log("─────────────────────────────");
+  console.log("Login dengan:");
+  console.log("  Email    : admin@demo.com");
+  console.log("  Password : password123");
+  console.log("─────────────────────────────");
 }
 
 main()
   .catch((e) => {
-    console.error("❌ Seed gagal:", e)
-    process.exit(1)
+    console.error("❌ Seed gagal:", e);
+    process.exit(1);
   })
-  .finally(() => prisma.$disconnect())
+  .finally(() => prisma.$disconnect());

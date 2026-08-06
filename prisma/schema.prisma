@@ -27,6 +27,47 @@ model ApprovalConfig {
   @@index([tenantId])
 }
 
+model PurchaseOrder {
+  id                   String    @id @default(uuid())
+  tenantId             String
+  poNumber             String    // format: PO-YYYYMM-0001, auto-generated per tenant, reset tiap bulan
+  vendorId             String
+  createdBy            String    // user id yang membuat PO
+  status               String    @default("DRAFT") // divalidasi di kode (lib/poStatusFlow.ts), bukan Prisma enum
+  currentApprovalLevel Int       @default(0) // 0 = belum masuk proses approval
+  totalAmount          Decimal   @db.Decimal(15, 2) @default(0) // auto-calculated, sum dari POLine.totalPrice
+  deliveryDate         DateTime?
+  notes                String?
+  isDeleted            Boolean   @default(false)
+  deletedAt            DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  tenant  Tenant   @relation(fields: [tenantId], references: [id])
+  vendor  Vendor   @relation(fields: [vendorId], references: [id])
+  creator User     @relation(fields: [createdBy], references: [id])
+  lines   POLine[]
+
+  @@index([tenantId])
+  @@unique([tenantId, poNumber]) // poNumber unik per tenant
+}
+
+model POLine {
+  id          String  @id @default(uuid())
+  poId        String
+  itemId      String
+  description String?
+  quantity    Decimal @db.Decimal(15, 2)
+  uom         String
+  unitPrice   Decimal @db.Decimal(15, 2)
+  totalPrice  Decimal @db.Decimal(15, 2) // auto-calculated: quantity * unitPrice, dihitung di API, bukan trigger DB
+
+  po   PurchaseOrder @relation(fields: [poId], references: [id])
+  item Item          @relation(fields: [itemId], references: [id])
+
+  @@index([poId])
+}
+
 model User {
   id        String  @id @default(uuid())
   tenantId  String
@@ -38,8 +79,10 @@ model User {
 
   tenant   Tenant  @relation(fields: [tenantId], references: [id])
 
+  approvalConfigs ApprovalConfig[]
+  createdPurchaseOrders PurchaseOrder[]
+
   @@index([tenantId])
-  approvalConfigs ApprovalConfig[] // relasi balik: user ini approver di config mana aja
 }
 
 model Vendor {
@@ -57,9 +100,10 @@ model Vendor {
   deletedAt    DateTime?
 
   tenant       Tenant    @relation(fields: [tenantId], references: [id])
+  purchaseOrders PurchaseOrder[]
 
   @@index([tenantId])
-  @@unique([tenantId, code])   // code unik PER TENANT, bukan global  
+  @@unique([tenantId, code])
 }
 
 model Item {
@@ -75,9 +119,10 @@ model Item {
   deletedAt   DateTime?
 
   tenant      Tenant  @relation(fields: [tenantId], references: [id])
+  poLines     POLine[]
 
   @@index([tenantId])
-  @@unique([tenantId, code])   // code unik PER TENANT, bukan global
+  @@unique([tenantId, code])
 }
 
 model Tenant{
@@ -90,4 +135,5 @@ model Tenant{
   Vendor    Vendor[]
   Item      Item[]
   approvalConfigs ApprovalConfig[] 
+  purchaseOrders  PurchaseOrder[]
 }
