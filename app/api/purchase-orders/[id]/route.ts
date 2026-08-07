@@ -71,6 +71,20 @@ export async function PUT(req: NextRequest, { params }: RouteContext) {
 
   const { vendorId, status, notes, deliveryDate, lines } = parsed.data;
 
+  // ── Cegah status approval-related diubah lewat PUT biasa ──
+  // SUBMITTED/APPROVED/REJECTED punya alur bisnis khusus (matching strategy,
+  // approval per-level, validasi wewenang) yang HARUS lewat endpoint dedicated:
+  // /submit, /approve, /reject. Kalau dibolehkan lewat PUT, approval flow bisa dilewati begitu saja.
+  const APPROVAL_MANAGED_STATUSES = ["SUBMITTED", "APPROVED", "REJECTED"];
+  if (status !== undefined && APPROVAL_MANAGED_STATUSES.includes(status)) {
+    return NextResponse.json(
+      {
+        error: `Status '${status}' tidak bisa diubah lewat endpoint ini. Gunakan endpoint /submit, /approve, atau /reject.`,
+      },
+      { status: 400 },
+    );
+  }
+
   // ── Validasi transisi status (kalau status dikirim & beda dari sekarang) ──
   if (status !== undefined && status !== existing.status) {
     if (!isValidTransition(existing.status, status)) {
@@ -208,12 +222,6 @@ export async function DELETE(req: NextRequest, { params }: RouteContext) {
       { status: 409 },
     );
   }
-
-  // Hapus lines dulu (FK constraint), baru header, dibungkus transaction
-  // await prisma.$transaction([
-  //   prisma.pOLine.deleteMany({ where: { poId: id } }),
-  //   prisma.purchaseOrder.delete({ where: { id } }),
-  // ]);
 
   // Soft delete: tandai isDeleted + deletedAt, JANGAN hapus row-nya.
   // poNumber tetap tersimpan di database (walau gak dipakai lagi),

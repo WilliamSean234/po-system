@@ -13,18 +13,77 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model ApprovalConfig {
-  id             String   @id @default(uuid())
-  tenantId       String
-  level          Int      // urutan approval: 1, 2, 3, dst
-  minAmount      Decimal  @db.Decimal(15, 2) // batas bawah nominal PO yang butuh level ini
-  maxAmount      Decimal?  @db.Decimal(15, 2) // batas atas nominal PO yang butuh level ini
-  approverUserId String   // user yang berhak approve di level ini
+// Level otoritas approval per tenant (mirip Release Code SAP).
+// Nama bebas ditentukan tenant sendiri: "Supervisor", "Manager", dst.
+model ApprovalLevel {
+  id       String @id @default(uuid())
+  tenantId String
+  name     String
 
-  tenant   Tenant @relation(fields: [tenantId], references: [id])
-  approver User   @relation(fields: [approverUserId], references: [id])
+  tenant    Tenant                 @relation(fields: [tenantId], references: [id])
+  approvers ApprovalLevelUser[]    // banyak user bisa berwenang di level yang sama
+  steps     ApprovalStrategyStep[]
+  logs      ApprovalLog[]
 
   @@index([tenantId])
+}
+
+// M:N — user mana saja yang berwenang approve di suatu ApprovalLevel
+model ApprovalLevelUser {
+  id              String @id @default(uuid())
+  approvalLevelId String
+  userId          String
+
+  approvalLevel ApprovalLevel @relation(fields: [approvalLevelId], references: [id])
+  user          User          @relation(fields: [userId], references: [id])
+
+  @@unique([approvalLevelId, userId])
+}
+
+// Aturan: untuk rentang nominal berapa, strategi approval apa yang berlaku.
+// Menggantikan fungsi range-matching yang dulu ada di ApprovalConfig.
+model ApprovalStrategy {
+  id           String   @id @default(uuid())
+  tenantId     String
+  name         String
+  minAmount    Decimal  @db.Decimal(15, 2)
+  maxAmount    Decimal? @db.Decimal(15, 2) // null = tak terbatas, hanya boleh 1 per tenant
+  isSequential Boolean  @default(false)     // true = step harus urut sesuai `sequence`, false = bebas urutan
+
+  tenant         Tenant                 @relation(fields: [tenantId], references: [id])
+  steps          ApprovalStrategyStep[]
+  purchaseOrders PurchaseOrder[]
+
+  @@index([tenantId])
+}
+
+// Level-level apa saja yang dibutuhkan satu ApprovalStrategy, termasuk urutannya
+model ApprovalStrategyStep {
+  id                 String @id @default(uuid())
+  approvalStrategyId String
+  approvalLevelId    String
+  sequence           Int    // dipakai hanya jika strategy.isSequential = true
+
+  strategy ApprovalStrategy @relation(fields: [approvalStrategyId], references: [id])
+  level    ApprovalLevel    @relation(fields: [approvalLevelId], references: [id])
+
+  @@unique([approvalStrategyId, approvalLevelId])
+}
+
+model ApprovalLog {
+  id              String   @id @default(uuid())
+  poId            String
+  approvalLevelId String   // diganti dari `level Int` jadi relasi langsung ke ApprovalLevel
+  approverId      String
+  action          String   // "APPROVED" | "REJECTED"
+  notes           String?
+  actedAt         DateTime @default(now())
+
+  po            PurchaseOrder @relation(fields: [poId], references: [id])
+  approvalLevel ApprovalLevel @relation(fields: [approvalLevelId], references: [id])
+  approver      User          @relation(fields: [approverId], references: [id])
+
+  @@index([poId])
 }
 
 model PurchaseOrder {
@@ -34,7 +93,8 @@ model PurchaseOrder {
   vendorId             String
   createdBy            String    // user id yang membuat PO
   status               String    @default("DRAFT") // divalidasi di kode (lib/poStatusFlow.ts), bukan Prisma enum
-  currentApprovalLevel Int       @default(0) // 0 = belum masuk proses approval
+  approvalStrategyId   String?   // strategi yang cocok sesuai totalAmount saat submit
+  submittedAt          DateTime? // dipakai buat scoping siklus approval (resubmit setelah REJECTED)
   totalAmount          Decimal   @db.Decimal(15, 2) @default(0) // auto-calculated, sum dari POLine.totalPrice
   deliveryDate         DateTime?
   notes                String?
@@ -43,10 +103,12 @@ model PurchaseOrder {
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
-  tenant  Tenant   @relation(fields: [tenantId], references: [id])
-  vendor  Vendor   @relation(fields: [vendorId], references: [id])
-  creator User     @relation(fields: [createdBy], references: [id])
-  lines   POLine[]
+  tenant           Tenant   @relation(fields: [tenantId], references: [id])
+  vendor           Vendor   @relation(fields: [vendorId], references: [id])
+  creator          User     @relation(fields: [createdBy], references: [id])
+  approvalStrategy ApprovalStrategy? @relation(fields: [approvalStrategyId], references: [id])
+  lines            POLine[]
+  approvalLogs     ApprovalLog[]
 
   @@index([tenantId])
   @@unique([tenantId, poNumber]) // poNumber unik per tenant
@@ -79,7 +141,8 @@ model User {
 
   tenant   Tenant  @relation(fields: [tenantId], references: [id])
 
-  approvalConfigs ApprovalConfig[]
+  approvalLevels        ApprovalLevelUser[]
+  approvalLogs          ApprovalLog[]
   createdPurchaseOrders PurchaseOrder[]
 
   @@index([tenantId])
@@ -131,9 +194,11 @@ model Tenant{
   slug      String    @unique
   plan      String    @default("free")
   createdAt DateTime  @default(now())   
-  users     User[]
-  Vendor    Vendor[]
-  Item      Item[]
-  approvalConfigs ApprovalConfig[] 
-  purchaseOrders  PurchaseOrder[]
+
+  users              User[]
+  Vendor             Vendor[]
+  Item               Item[]
+  approvalLevels     ApprovalLevel[]
+  approvalStrategies ApprovalStrategy[]
+  purchaseOrders     PurchaseOrder[]
 }

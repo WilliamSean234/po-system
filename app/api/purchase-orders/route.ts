@@ -109,7 +109,6 @@ export async function POST(req: NextRequest) {
           vendorId,
           createdBy,
           status: "DRAFT",
-          currentApprovalLevel: 0,
           totalAmount,
           deliveryDate: deliveryDate ? new Date(deliveryDate) : null,
           notes,
