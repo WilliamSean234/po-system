@@ -102,6 +102,8 @@ model PurchaseOrder {
   deletedAt            DateTime?
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
+  sentAt               DateTime? // waktu PO ditransisikan ke PO_SENT (null kalau belum pernah dikirim)
+  sentBy               String?   // user id yang trigger pengiriman — untuk audit trail siapa yang kirim ke vendor
 
   tenant           Tenant   @relation(fields: [tenantId], references: [id])
   vendor           Vendor   @relation(fields: [vendorId], references: [id])
@@ -109,6 +111,8 @@ model PurchaseOrder {
   approvalStrategy ApprovalStrategy? @relation(fields: [approvalStrategyId], references: [id])
   lines            POLine[]
   approvalLogs     ApprovalLog[]
+  goodsReceipts    GoodsReceipt[]
+  sender           User? @relation("PurchaseOrderSender", fields: [sentBy], references: [id])
 
   @@index([tenantId])
   @@unique([tenantId, poNumber]) // poNumber unik per tenant
@@ -126,8 +130,51 @@ model POLine {
 
   po   PurchaseOrder @relation(fields: [poId], references: [id])
   item Item          @relation(fields: [itemId], references: [id])
+  grLines GRLine[]
 
   @@index([poId])
+}
+
+model GoodsReceipt {
+  id          String   @id @default(uuid())
+  tenantId    String
+  grNumber    String   // format: GR-YYYYMM-0001, auto-generated per tenant, reset bulanan
+  poId        String
+  receivedBy  String   // SELALU dari session.user.id — endpoint menolak jika field ini dikirim manual di body
+  receiptDate DateTime
+  notes       String?
+  createdAt   DateTime @default(now())
+  // Sengaja TIDAK ADA updatedAt/isDeleted/deletedAt: GR sama sekali tidak punya
+  // endpoint update/delete, jadi field-field itu tidak akan pernah terpakai.
+
+  tenant   Tenant        @relation(fields: [tenantId], references: [id])
+  po       PurchaseOrder @relation(fields: [poId], references: [id])
+  receiver User          @relation(fields: [receivedBy], references: [id])
+  lines    GRLine[]
+
+  @@index([tenantId])
+  @@index([poId])
+  @@unique([tenantId, grNumber])
+}
+
+model GRLine {
+  id               String    @id @default(uuid())
+  grId             String
+  poLineId         String    // referensi ke PO Line spesifik, bukan itemId langsung
+  batchNumber      String    // nomor lot/batch dari vendor atau internal
+  expiryDate       DateTime? // opsional — tidak semua item butuh (jasa, alat non-consumable, dll)
+  quantityOrdered  Decimal   @db.Decimal(15, 2) // snapshot POLine.quantity saat GR dibuat — audit trail saja, BUKAN sumber validasi
+  quantityReceived Decimal   @db.Decimal(15, 2) // qty diterima untuk batch ini
+  notes            String?
+
+  goodsReceipt GoodsReceipt @relation(fields: [grId], references: [id])
+  poLine       POLine       @relation(fields: [poLineId], references: [id])
+
+  @@index([grId])
+  @@index([poLineId])
+  // Sengaja TIDAK ADA @@unique — 1 PO Line boleh terima batch yang sama
+  // di GR berbeda (restock lanjutan dari batch produksi sama), dan 1 GR
+  // boleh punya beberapa baris untuk poLineId yang sama (multi-batch split)
 }
 
 model User {
@@ -144,6 +191,8 @@ model User {
   approvalLevels        ApprovalLevelUser[]
   approvalLogs          ApprovalLog[]
   createdPurchaseOrders PurchaseOrder[]
+  sentPurchaseOrders    PurchaseOrder[] @relation("PurchaseOrderSender")
+  goodsReceipts         GoodsReceipt[]
 
   @@index([tenantId])
 }
@@ -201,4 +250,5 @@ model Tenant{
   approvalLevels     ApprovalLevel[]
   approvalStrategies ApprovalStrategy[]
   purchaseOrders     PurchaseOrder[]
+  goodsReceipts      GoodsReceipt[]
 }
