@@ -4,6 +4,43 @@ import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
 
+// ============================================================
+// W3T2 — RBAC: Permission catalog & default role mapping
+// ============================================================
+// Katalog permission GLOBAL. Key ini dipakai di kode (hasPermission helper),
+// BUKAN di UI — description yang ditampilkan ke user di admin UI.
+// Nambah permission baru kedepannya = tambah entry di array ini, jalankan
+// seed lagi (upsert by key, aman dijalankan berulang).
+const PERMISSION_CATALOG = [
+  // purchase_order
+  { key: "po.create", category: "purchase_order", description: "Membuat Purchase Order baru" },
+  { key: "po.submit", category: "purchase_order", description: "Submit PO untuk approval" },
+  { key: "po.send", category: "purchase_order", description: "Kirim PO ke vendor (APPROVED → PO_SENT)" },
+  { key: "po.cancel", category: "purchase_order", description: "Cancel Purchase Order" },
+  // goods_receipt
+  { key: "gr.create", category: "goods_receipt", description: "Input Goods Receipt" },
+  // invoice
+  { key: "invoice.create", category: "invoice", description: "Input invoice (status DRAFT)" },
+  { key: "invoice.submit", category: "invoice", description: "Submit invoice untuk matching" },
+  { key: "invoice.resolve_dispute", category: "invoice", description: "Resolve status DISPUTED menjadi MATCHED" },
+  { key: "invoice.mark_paid", category: "invoice", description: "Tandai invoice sebagai PAID" },
+  { key: "invoice.cancel", category: "invoice", description: "Cancel invoice" },
+  // master_data
+  { key: "vendor.manage", category: "master_data", description: "Tambah/ubah/hapus data Vendor" },
+  { key: "item.manage", category: "master_data", description: "Tambah/ubah/hapus data Item" },
+] as const;
+
+// Default mapping role -> permission key, di-assign ke tenant baru saat seeding.
+// Ini HANYA default awal — bisa diubah tenant lewat admin UI (W3T6) tanpa
+// menyentuh kode ini lagi. "admin" sengaja tidak didaftarkan eksplisit di sini
+// karena admin selalu full-access secara hardcode di hasPermission helper (W3T3),
+// bukan lewat baris RolePermission — konsisten dengan alasan anti-lockout.
+const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
+  purchasing: ["po.create", "po.submit", "po.send", "po.cancel", "vendor.manage", "item.manage"],
+  warehouse: ["gr.create"],
+  finance: ["invoice.create", "invoice.submit", "invoice.resolve_dispute", "invoice.mark_paid", "invoice.cancel"],
+};
+
 async function main() {
   // ── 1. TENANT ──────────────────────────────────────────────
   const tenant = await prisma.tenant.upsert({
@@ -167,6 +204,62 @@ async function main() {
     }),
   ]);
   console.log("✅ Items:", items.map((i) => i.name).join(", "));
+
+  // ── 5. PERMISSIONS (W3T2) ────────────────────────────────
+  // Upsert seluruh katalog permission by key — aman dijalankan berulang,
+  // dan aman ditambah entry baru kapan pun tanpa migration.
+  const permissions = await Promise.all(
+    PERMISSION_CATALOG.map((p) =>
+      prisma.permission.upsert({
+        where: { key: p.key },
+        update: { description: p.description, category: p.category }, // biar description bisa di-update lewat seed juga
+        create: p,
+      })
+    )
+  );
+  console.log("✅ Permissions:", permissions.map((p) => p.key).join(", "));
+
+  // Map key -> id, dipakai buat assign RolePermission di bawah
+  const permissionIdByKey = new Map(permissions.map((p) => [p.key, p.id]));
+
+  // ── 6. ROLE PERMISSIONS (W3T2) ───────────────────────────
+  // Assign default mapping role -> permission untuk tenant demo ini.
+  // Di production, blok ini idealnya dipanggil ulang tiap kali tenant baru
+  // dibuat (saat onboarding), bukan cuma sekali di seed — dicatat di
+  // on-the-horizon sebagai bagian dari "tenant self-signup" nanti.
+  const rolePermissionEntries = Object.entries(DEFAULT_ROLE_PERMISSIONS).flatMap(
+    ([role, keys]) => keys.map((key) => ({ role, key }))
+  );
+
+  await Promise.all(
+    rolePermissionEntries.map(({ role, key }) => {
+      const permissionId = permissionIdByKey.get(key);
+      if (!permissionId) {
+        // Guard: kalau ada typo key di DEFAULT_ROLE_PERMISSIONS yang tidak
+        // match PERMISSION_CATALOG, gagal jelas saat seed daripada silent skip.
+        throw new Error(`Permission key "${key}" di DEFAULT_ROLE_PERMISSIONS tidak ada di PERMISSION_CATALOG`);
+      }
+      return prisma.rolePermission.upsert({
+        where: {
+          tenantId_role_permissionId: {
+            tenantId: tenant.id,
+            role,
+            permissionId,
+          },
+        },
+        update: {},
+        create: {
+          tenantId: tenant.id,
+          role,
+          permissionId,
+        },
+      });
+    })
+  );
+  console.log(
+    "✅ Role Permissions:",
+    rolePermissionEntries.map(({ role, key }) => `${role}→${key}`).join(", ")
+  );
 
   console.log("\n🎉 Seed selesai!");
   console.log("─────────────────────────────");

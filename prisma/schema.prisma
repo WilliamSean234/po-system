@@ -177,6 +177,45 @@ model GRLine {
   // boleh punya beberapa baris untuk poLineId yang sama (multi-batch split)
 }
 
+// Katalog permission yang dikenal sistem. GLOBAL (bukan per-tenant) —
+// tenant tidak bisa bikin permission baru sendiri, hanya assign/revoke
+// yang sudah ada di katalog ini. Nambah permission baru = insert row baru
+// via seed, BUKAN migration schema (append-only by design).
+model Permission {
+  id          String @id @default(uuid())
+  key         String @unique // contoh: "invoice.resolve_dispute", "po.send" — dipakai di kode, bukan id
+  description String          // ditampilkan di UI admin, contoh: "Boleh resolve selisih harga invoice"
+  category    String          // "invoice" | "purchase_order" | "goods_receipt" | "master_data" — buat grouping di UI matrix
+
+  rolePermissions RolePermission[]
+
+  @@index([category])
+}
+
+// Mapping role -> permission, PER TENANT — inilah yang bikin adjustable per tenant.
+// Tenant A bisa kasih "admin" akses invoice.resolve_dispute, tenant B tidak.
+//
+// PENTING: akses untuk mengubah RolePermission ITU SENDIRI (endpoint PUT
+// /api/role-permissions) TIDAK dicek lewat tabel ini — tetap hardcode
+// role === "admin" di kode. Ini disengaja untuk mencegah lockout: kalau
+// akses RBAC management bisa dicabut lewat RBAC itu sendiri, admin bisa
+// tidak sengaja mengunci dirinya sendiri tanpa jalan keluar selain edit DB
+// manual. Pola ini sama seperti "break glass" access di sistem otorisasi
+// manapun (termasuk SAP PFCG — role SAP_ALL/superuser tidak diatur lewat
+// role assignment biasa).
+model RolePermission {
+  id           String @id @default(uuid())
+  tenantId     String
+  role         String // "admin" | "purchasing" | "warehouse" | "finance" — string bebas, konsisten dengan User.role
+  permissionId String
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id])
+  permission Permission @relation(fields: [permissionId], references: [id])
+
+  @@unique([tenantId, role, permissionId])
+  @@index([tenantId])
+}
+
 model User {
   id        String  @id @default(uuid())
   tenantId  String
@@ -251,4 +290,5 @@ model Tenant{
   approvalStrategies ApprovalStrategy[]
   purchaseOrders     PurchaseOrder[]
   goodsReceipts      GoodsReceipt[]
+  rolePermissions    RolePermission[]
 }
