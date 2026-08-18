@@ -112,6 +112,7 @@ model PurchaseOrder {
   lines            POLine[]
   approvalLogs     ApprovalLog[]
   goodsReceipts    GoodsReceipt[]
+  invoices         Invoice[]
   sender           User? @relation("PurchaseOrderSender", fields: [sentBy], references: [id])
 
   @@index([tenantId])
@@ -128,9 +129,10 @@ model POLine {
   unitPrice   Decimal @db.Decimal(15, 2)
   totalPrice  Decimal @db.Decimal(15, 2) // auto-calculated: quantity * unitPrice, dihitung di API, bukan trigger DB
 
-  po   PurchaseOrder @relation(fields: [poId], references: [id])
-  item Item          @relation(fields: [itemId], references: [id])
-  grLines GRLine[]
+  po           PurchaseOrder @relation(fields: [poId], references: [id])
+  item         Item          @relation(fields: [itemId], references: [id])
+  grLines      GRLine[]
+  invoiceLines InvoiceLine[]
 
   @@index([poId])
 }
@@ -176,6 +178,78 @@ model GRLine {
   // di GR berbeda (restock lanjutan dari batch produksi sama), dan 1 GR
   // boleh punya beberapa baris untuk poLineId yang sama (multi-batch split)
 }
+
+// ============================================================
+// W4T1 — Invoice module (SAP MIRO — Logistics Invoice Verification pattern)
+// ============================================================
+
+// Header invoice. Merujuk ke PurchaseOrder (BUKAN GoodsReceipt langsung) —
+// supaya 1 invoice bisa mengonsolidasi beberapa GR sekaligus, atau
+// menginvoice sebagian dari 1 GR, sesuai kebiasaan vendor riil.
+// Vendor TIDAK di-duplicate di sini — selalu diturunkan dari po.vendorId,
+// konsisten dengan pola GoodsReceipt yang juga tidak duplicate vendorId.
+model Invoice {
+  id            String    @id @default(uuid())
+  tenantId      String
+  invoiceNumber String    // format: INV-YYYYMM-0001, auto-generated per tenant, reset bulanan
+  poId          String
+  status        String    @default("DRAFT") // divalidasi di kode (lib/invoiceStatusFlow.ts), bukan Prisma enum
+
+  invoiceDate DateTime  // tanggal di kertas invoice vendor — beda dari createdAt (kapan dicatat di sistem)
+  dueDate     DateTime? // manual input untuk MVP; auto-calculate dari vendor.paymentTerms didefer
+                         // (paymentTerms masih free-text string, belum terstruktur ke jumlah hari)
+
+  totalAmount Decimal @db.Decimal(15, 2) @default(0) // auto-calculated, sum dari InvoiceLine.totalPrice
+  notes       String?
+
+  createdBy   String    // user yang input invoice (biasanya role finance)
+  submittedAt DateTime? // waktu status DRAFT -> SUBMITTED, sistem jalankan matching di titik ini
+  submittedBy String?
+  resolvedAt  DateTime? // waktu status DISPUTED -> MATCHED lewat resolve manual
+  resolvedBy  String?   // WAJIB permission invoice.resolve_dispute — dicek di endpoint, bukan di schema
+  paidAt      DateTime? // waktu status MATCHED -> PAID
+  paidBy      String?
+
+  isDeleted Boolean   @default(false) // hanya dipakai untuk hapus invoice yang MASIH DRAFT (belum submit)
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  po        PurchaseOrder @relation(fields: [poId], references: [id])
+  creator   User     @relation("InvoiceCreator", fields: [createdBy], references: [id])
+  submitter User?    @relation("InvoiceSubmitter", fields: [submittedBy], references: [id])
+  resolver  User?    @relation("InvoiceResolver", fields: [resolvedBy], references: [id])
+  payer     User?    @relation("InvoicePayer", fields: [paidBy], references: [id])
+  lines     InvoiceLine[]
+
+  @@index([tenantId])
+  @@index([poId])
+  @@unique([tenantId, invoiceNumber]) // invoiceNumber unik per tenant
+}
+
+model InvoiceLine {
+  id         String  @id @default(uuid())
+  invoiceId  String
+  poLineId   String  // referensi ke PO Line spesifik — dipakai buat validasi cumulative terhadap GRLine
+  quantity   Decimal @db.Decimal(15, 2) // qty yang diinvoice pada baris ini
+  unitPrice  Decimal @db.Decimal(15, 2) // harga di invoice vendor — BOLEH beda dari POLine.unitPrice
+                                          // (perbedaan inilah yang memicu status DISPUTED saat submit,
+                                          // dicek di lib/invoiceMatching.ts, task berikutnya)
+  totalPrice Decimal @db.Decimal(15, 2) // auto-calculated: quantity * unitPrice, dihitung di API
+  notes      String?
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+  poLine  POLine  @relation(fields: [poLineId], references: [id])
+
+  @@index([invoiceId])
+  @@index([poLineId])
+  // Sengaja TIDAK ADA @@unique([invoiceId, poLineId]) — 1 invoice bisa punya
+  // beberapa baris untuk poLineId yang sama kalau vendor split harga per
+  // batch pengiriman berbeda (jarang, tapi tidak mau di-block di level DB)
+}
+
 
 // Katalog permission yang dikenal sistem. GLOBAL (bukan per-tenant) —
 // tenant tidak bisa bikin permission baru sendiri, hanya assign/revoke
@@ -232,6 +306,11 @@ model User {
   createdPurchaseOrders PurchaseOrder[]
   sentPurchaseOrders    PurchaseOrder[] @relation("PurchaseOrderSender")
   goodsReceipts         GoodsReceipt[]
+  createdInvoices       Invoice[] @relation("InvoiceCreator")   
+  submittedInvoices     Invoice[] @relation("InvoiceSubmitter") 
+  resolvedInvoices      Invoice[] @relation("InvoiceResolver")  
+  paidInvoices          Invoice[] @relation("InvoicePayer")     
+
 
   @@index([tenantId])
 }
@@ -290,5 +369,6 @@ model Tenant{
   approvalStrategies ApprovalStrategy[]
   purchaseOrders     PurchaseOrder[]
   goodsReceipts      GoodsReceipt[]
+  invoices           Invoice[]
   rolePermissions    RolePermission[]
 }
