@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth"; // sesuaikan path sesuai setup NextAuth v5 kamu
 import { prisma } from "@/lib/prisma";
+import { assertPermission, PermissionDeniedError } from "@/lib/hasPermission";
 
 // CATATAN types/next-auth.d.ts: file ini WAJIB ada di project (di
 // types/next-auth.d.ts) karena route ini mengakses session.user.tenantId,
@@ -28,7 +29,7 @@ const ALLOWED_ROLES = ["admin", "purchasing"] as const;
  */
 export async function POST(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   const { id: poId } = await params;
   if (!poId) {
@@ -41,12 +42,19 @@ export async function POST(
   }
   const { tenantId, id: userId, role } = session.user;
 
-  // Role guard — hanya admin/purchasing yang boleh mengirim PO ke vendor
-  if (!ALLOWED_ROLES.includes(role as (typeof ALLOWED_ROLES)[number])) {
-    return NextResponse.json(
-      { error: "Anda tidak berwenang mengirim PO ke vendor" },
-      { status: 403 }
-    );
+  // Permission guard — sekarang table-driven lewat RolePermission,
+  // bukan hardcode array. assertPermission throw PermissionDeniedError
+  // kalau tidak diizinkan, ditangkap di try/catch di bawah.
+  try {
+    await assertPermission(tenantId, role, "po.send");
+  } catch (err) {
+    if (err instanceof PermissionDeniedError) {
+      return NextResponse.json(
+        { error: "Anda tidak berwenang mengirim PO ke vendor" },
+        { status: 403 },
+      );
+    }
+    throw err; // error lain (misal Prisma connection issue) — biarkan naik, bukan disamarkan jadi 403
   }
 
   const po = await prisma.purchaseOrder.findFirst({
@@ -67,7 +75,7 @@ export async function POST(
       {
         error: `PO hanya bisa dikirim ke vendor dari status APPROVED. Status saat ini: ${po.status}`,
       },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
