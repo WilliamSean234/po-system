@@ -7,7 +7,9 @@ import { getApprovedLevelIds, isStepUnlocked } from "@/lib/approvalProgress";
 type RouteContext = { params: Promise<{ id: string }> };
 
 const rejectBodySchema = z.object({
-  approvalLevelId: z.string().uuid({ message: "approvalLevelId harus UUID valid" }),
+  approvalLevelId: z
+    .string()
+    .uuid({ message: "approvalLevelId harus UUID valid" }),
   notes: z.string().optional(),
 });
 
@@ -28,58 +30,91 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
   const body = await req.json().catch(() => ({}));
   const parsed = rejectBodySchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    return NextResponse.json(
+      { error: parsed.error.flatten() },
+      { status: 400 },
+    );
   }
   const { approvalLevelId, notes } = parsed.data;
 
   const po = await prisma.purchaseOrder.findFirst({
     where: { id, tenantId, isDeleted: false },
-    include: { approvalStrategy: { include: { steps: { orderBy: { sequence: "asc" } } } } },
+    include: {
+      approvalStrategy: {
+        include: { steps: { orderBy: { sequence: "asc" } } },
+      },
+    },
   });
   if (!po) {
-    return NextResponse.json({ error: "Purchase Order tidak ditemukan" }, { status: 404 });
+    return NextResponse.json(
+      { error: "Purchase Order tidak ditemukan" },
+      { status: 404 },
+    );
   }
 
   if (po.status !== "SUBMITTED" || !po.approvalStrategy || !po.submittedAt) {
     return NextResponse.json(
-      { error: `Purchase Order berstatus '${po.status}' tidak sedang menunggu approval` },
-      { status: 409 }
+      {
+        error: `Purchase Order berstatus '${po.status}' tidak sedang menunggu approval`,
+      },
+      { status: 409 },
     );
   }
 
   const strategy = po.approvalStrategy;
 
-  const step = strategy.steps.find((s) => s.approvalLevelId === approvalLevelId);
+  const step = strategy.steps.find(
+    (s) => s.approvalLevelId === approvalLevelId,
+  );
   if (!step) {
     return NextResponse.json(
-      { error: "Approval Level ini bukan bagian dari Approval Strategy PO ini" },
-      { status: 400 }
+      {
+        error: "Approval Level ini bukan bagian dari Approval Strategy PO ini",
+      },
+      { status: 400 },
     );
   }
 
-  const membership = await prisma.approvalLevelUser.findUnique({
-    where: { approvalLevelId_userId: { approvalLevelId, userId } },
-  });
-  if (!membership) {
-    return NextResponse.json(
-      { error: "Anda tidak memiliki wewenang untuk reject di level ini" },
-      { status: 403 }
-    );
+  // Admin selalu dianggap berwenang reject di level manapun — bypass sama
+  // persis alasannya dengan yang di approve/route.ts. Urutan sequential
+  // tetap dihormati lewat isStepUnlocked di bawah.
+  if (session.user.role !== "admin") {
+    const membership = await prisma.approvalLevelUser.findUnique({
+      where: { approvalLevelId_userId: { approvalLevelId, userId } },
+    });
+    if (!membership) {
+      return NextResponse.json(
+        { error: "Anda tidak memiliki wewenang untuk reject di level ini" },
+        { status: 403 },
+      );
+    }
   }
 
   const approvedLevelIds = await getApprovedLevelIds(id, po.submittedAt);
   if (!isStepUnlocked(strategy, approvalLevelId, approvedLevelIds)) {
     return NextResponse.json(
-      { error: "Belum giliran level ini bertindak — level dengan urutan sebelumnya harus disetujui dulu" },
-      { status: 409 }
+      {
+        error:
+          "Belum giliran level ini bertindak — level dengan urutan sebelumnya harus disetujui dulu",
+      },
+      { status: 409 },
     );
   }
 
   const [, updatedPo] = await prisma.$transaction([
     prisma.approvalLog.create({
-      data: { poId: id, approvalLevelId, approverId: userId, action: "REJECTED", notes },
+      data: {
+        poId: id,
+        approvalLevelId,
+        approverId: userId,
+        action: "REJECTED",
+        notes,
+      },
     }),
-    prisma.purchaseOrder.update({ where: { id }, data: { status: "REJECTED" } }),
+    prisma.purchaseOrder.update({
+      where: { id },
+      data: { status: "REJECTED" },
+    }),
   ]);
 
   return NextResponse.json(updatedPo);

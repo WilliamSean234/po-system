@@ -2,12 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { getApprovedLevelIds, isStepUnlocked, allStepsApproved } from "@/lib/approvalProgress";
+import {
+  getApprovedLevelIds,
+  isStepUnlocked,
+  allStepsApproved,
+} from "@/lib/approvalProgress";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 const approveBodySchema = z.object({
-  approvalLevelId: z.string().uuid({ message: "approvalLevelId harus UUID valid" }),
+  approvalLevelId: z
+    .string()
+    .uuid({ message: "approvalLevelId harus UUID valid" }),
   notes: z.string().optional(),
 });
 
@@ -28,51 +34,76 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
   const body = await req.json().catch(() => ({}));
   const parsed = approveBodySchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    return NextResponse.json(
+      { error: parsed.error.flatten() },
+      { status: 400 },
+    );
   }
   const { approvalLevelId, notes } = parsed.data;
 
   const po = await prisma.purchaseOrder.findFirst({
     where: { id, tenantId, isDeleted: false },
-    include: { approvalStrategy: { include: { steps: { orderBy: { sequence: "asc" } } } } },
+    include: {
+      approvalStrategy: {
+        include: { steps: { orderBy: { sequence: "asc" } } },
+      },
+    },
   });
   if (!po) {
-    return NextResponse.json({ error: "Purchase Order tidak ditemukan" }, { status: 404 });
+    return NextResponse.json(
+      { error: "Purchase Order tidak ditemukan" },
+      { status: 404 },
+    );
   }
 
   if (po.status !== "SUBMITTED" || !po.approvalStrategy || !po.submittedAt) {
     return NextResponse.json(
-      { error: `Purchase Order berstatus '${po.status}' tidak sedang menunggu approval` },
-      { status: 409 }
+      {
+        error: `Purchase Order berstatus '${po.status}' tidak sedang menunggu approval`,
+      },
+      { status: 409 },
     );
   }
 
   const strategy = po.approvalStrategy;
 
   // Pastikan level yang mau approve ini memang bagian dari strategy PO ini
-  const step = strategy.steps.find((s) => s.approvalLevelId === approvalLevelId);
+  const step = strategy.steps.find(
+    (s) => s.approvalLevelId === approvalLevelId,
+  );
   if (!step) {
     return NextResponse.json(
-      { error: "Approval Level ini bukan bagian dari Approval Strategy PO ini" },
-      { status: 400 }
+      {
+        error: "Approval Level ini bukan bagian dari Approval Strategy PO ini",
+      },
+      { status: 400 },
     );
   }
 
-  // Pastikan user yang request ini BENAR-BENAR terdaftar sebagai approver di level tsb
-  const membership = await prisma.approvalLevelUser.findUnique({
-    where: { approvalLevelId_userId: { approvalLevelId, userId } },
-  });
-  if (!membership) {
-    return NextResponse.json(
-      { error: "Anda tidak memiliki wewenang untuk approve di level ini" },
-      { status: 403 }
-    );
+  // Admin selalu dianggap berwenang approve di level manapun, TANPA perlu
+  // terdaftar eksplisit di ApprovalLevelUser — bypass ini konsisten dengan
+  // hasPermission.ts (RBAC), mencegah proses approval macet total kalau
+  // approver asli tidak tersedia (cuti, lupa password, dst). Urutan
+  // sequential TETAP dihormati (dicek terpisah di bawah via isStepUnlocked)
+  // — bypass ini hanya soal "siapa berwenang", bukan "giliran siapa".
+  if (session.user.role !== "admin") {
+    const membership = await prisma.approvalLevelUser.findUnique({
+      where: { approvalLevelId_userId: { approvalLevelId, userId } },
+    });
+    if (!membership) {
+      return NextResponse.json(
+        { error: "Anda tidak memiliki wewenang untuk approve di level ini" },
+        { status: 403 },
+      );
+    }
   }
-
   const approvedLevelIds = await getApprovedLevelIds(id, po.submittedAt);
 
   if (approvedLevelIds.has(approvalLevelId)) {
-    return NextResponse.json({ error: "Level ini sudah di-approve sebelumnya" }, { status: 409 });
+    return NextResponse.json(
+      { error: "Level ini sudah di-approve sebelumnya" },
+      { status: 409 },
+    );
   }
 
   if (!isStepUnlocked(strategy, approvalLevelId, approvedLevelIds)) {
@@ -81,12 +112,18 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
         error:
           "Belum giliran level ini approve. Strategy ini sequential — level dengan urutan sebelumnya harus disetujui dulu.",
       },
-      { status: 409 }
+      { status: 409 },
     );
   }
 
   await prisma.approvalLog.create({
-    data: { poId: id, approvalLevelId, approverId: userId, action: "APPROVED", notes },
+    data: {
+      poId: id,
+      approvalLevelId,
+      approverId: userId,
+      action: "APPROVED",
+      notes,
+    },
   });
 
   approvedLevelIds.add(approvalLevelId);
