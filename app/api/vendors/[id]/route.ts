@@ -2,14 +2,12 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import { updateVendorSchema } from "@/lib/validations/vendor";
+import { assertPermission, PermissionDeniedError } from "@/lib/hasPermission";
 
-// Next.js 16: params sekarang berupa Promise, bukan object biasa.
-// Harus di-`await` dulu sebelum diakses. Lupa await = params.id jadi
-// `undefined` diam-diam TANPA error, dan itu yang bikin Prisma drop
-// filter `id` dari where clause (root cause insiden soft-delete masal).
 type RouteParams = { params: Promise<{ id: string }> };
 
-// Ambil satu vendor berdasarkan ID
+// GET tidak diberi permission guard — read-only, konsisten dengan pola
+// GET lain di project.
 export async function GET(_: Request, { params }: RouteParams) {
   const session = await auth();
   if (!session?.user) {
@@ -24,7 +22,7 @@ export async function GET(_: Request, { params }: RouteParams) {
   const vendor = await prisma.vendor.findFirst({
     where: {
       id,
-      tenantId: session.user.tenantId, // Pastikan vendor milik tenant ini
+      tenantId: session.user.tenantId,
       isDeleted: false,
     },
   });
@@ -35,11 +33,26 @@ export async function GET(_: Request, { params }: RouteParams) {
   return NextResponse.json(vendor);
 }
 
-// Update vendor
+// BACKLOG REFACTOR: sebelumnya tidak ada permission guard sama sekali.
+// Sekarang table-driven lewat hasPermission("vendor.manage").
 export async function PUT(req: Request, { params }: RouteParams) {
   const session = await auth();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { tenantId, role } = session.user;
+
+  try {
+    await assertPermission(tenantId, role, "vendor.manage");
+  } catch (err) {
+    if (err instanceof PermissionDeniedError) {
+      return NextResponse.json(
+        { error: "Anda tidak berwenang mengubah vendor" },
+        { status: 403 }
+      );
+    }
+    throw err;
+  }
 
   const { id } = await params;
   if (!id) {
@@ -49,8 +62,6 @@ export async function PUT(req: Request, { params }: RouteParams) {
   try {
     const body = await req.json();
 
-    // Validasi pakai Zod — mencegah field liar (mis. tenantId, code, isDeleted)
-    // ikut ke-spread ke Prisma update
     const result = updateVendorSchema.safeParse(body);
     if (!result.success) {
       return NextResponse.json(
@@ -62,23 +73,19 @@ export async function PUT(req: Request, { params }: RouteParams) {
       );
     }
 
-    // updateMany (bukan update) supaya kita bisa cek affected count
-    // tanpa Prisma throw P2025 kalau id/tenantId gak match —
-    // lihat penjelasan sebelumnya soal kenapa ini penting.
     const updateResult = await prisma.vendor.updateMany({
       where: {
         id,
-        tenantId: session.user.tenantId, // Cegah update vendor tenant lain
+        tenantId,
         isDeleted: false,
       },
-      data: result.data, // sudah tervalidasi & typed, aman di-spread
+      data: result.data,
     });
 
     if (updateResult.count === 0) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    // updateMany gak return record-nya, jadi fetch ulang buat response
     const vendor = await prisma.vendor.findUnique({ where: { id } });
 
     return NextResponse.json(vendor);
@@ -91,11 +98,26 @@ export async function PUT(req: Request, { params }: RouteParams) {
   }
 }
 
-// Soft delete vendor
+// BACKLOG REFACTOR: sebelumnya tidak ada permission guard sama sekali.
+// Sekarang table-driven lewat hasPermission("vendor.manage").
 export async function DELETE(_: Request, { params }: RouteParams) {
   const session = await auth();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { tenantId, role } = session.user;
+
+  try {
+    await assertPermission(tenantId, role, "vendor.manage");
+  } catch (err) {
+    if (err instanceof PermissionDeniedError) {
+      return NextResponse.json(
+        { error: "Anda tidak berwenang menghapus vendor" },
+        { status: 403 }
+      );
+    }
+    throw err;
+  }
 
   const { id } = await params;
   if (!id) {
@@ -106,8 +128,8 @@ export async function DELETE(_: Request, { params }: RouteParams) {
     const deleteResult = await prisma.vendor.updateMany({
       where: {
         id,
-        tenantId: session.user.tenantId, // Cegah hapus vendor tenant lain
-        isDeleted: false, // gak bisa "hapus" vendor yang udah dihapus
+        tenantId,
+        isDeleted: false,
       },
       data: {
         isDeleted: true,

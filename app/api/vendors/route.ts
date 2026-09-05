@@ -1,21 +1,18 @@
-// untuk GET semua vendor dan POST vendor baru:
-
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import { createVendorSchema } from "@/lib/validations/vendor";
+import { assertPermission, PermissionDeniedError } from "@/lib/hasPermission";
 
 export async function GET() {
-  // Cek apakah user sudah login
   const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
   }
-  // Ambil semua vendor milik tenant yang sedang login
   const vendors = await prisma.vendor.findMany({
     where: {
       tenantId: session.user.tenantId,
-      isDeleted: false, // jangan tampilkan vendor yang sudah soft-deleted
+      isDeleted: false,
     },
     orderBy: { code: "asc" },
   });
@@ -23,18 +20,32 @@ export async function GET() {
   return NextResponse.json(vendors);
 }
 
+// BACKLOG REFACTOR: endpoint ini SEBELUMNYA tidak punya permission guard
+// sama sekali — role apapun bisa create vendor. Sekarang table-driven
+// lewat hasPermission("vendor.manage"), default role purchasing (+ admin).
 export async function POST(req: Request) {
-  // 1. Auth guard — konsisten pakai optional chaining
   const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const { tenantId, role } = session.user;
+
   try {
-    // 2. Parse body
+    await assertPermission(tenantId, role, "vendor.manage");
+  } catch (err) {
+    if (err instanceof PermissionDeniedError) {
+      return NextResponse.json(
+        { error: "Anda tidak berwenang membuat vendor" },
+        { status: 403 }
+      );
+    }
+    throw err;
+  }
+
+  try {
     const body = await req.json();
 
-    // 3. Validasi pakai Zod
     const result = createVendorSchema.safeParse(body);
     if (!result.success) {
       return NextResponse.json(
@@ -46,17 +57,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const tenantId = session.user.tenantId;
-
-    // 4. Generate code + create vendor dalam SATU transaction.
-    // Ini penting untuk mencegah race condition: kalau dua request
-    // POST datang hampir bersamaan, tanpa transaction keduanya bisa
-    // sama-sama menghitung "vendor berikutnya adalah #005" dan gagal
-    // di unique constraint, atau lebih buruk, salah satu silently
-    // menimpa nomor yang sama.
     const vendor = await prisma.$transaction(async (tx) => {
-      // Hitung jumlah vendor yang PERNAH dibuat di tenant ini
-      // (termasuk yang soft-deleted, supaya code tidak pernah dipakai ulang)
       const vendorCount = await tx.vendor.count({
         where: { tenantId },
       });
@@ -68,7 +69,7 @@ export async function POST(req: Request) {
         data: {
           ...result.data,
           code: generatedCode,
-          tenantId, // dari session, BUKAN dari body — mencegah cross-tenant injection
+          tenantId,
         },
       });
     });

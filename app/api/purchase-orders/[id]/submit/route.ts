@@ -3,12 +3,18 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { isValidTransition } from "@/lib/poStatusFlow";
 import { matchApprovalStrategy } from "@/lib/matchApprovalStrategy";
+import { assertPermission, PermissionDeniedError } from "@/lib/hasPermission";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 // POST /api/purchase-orders/[id]/submit
 // Submit PO: DRAFT/REJECTED -> SUBMITTED. ApprovalStrategy dicari otomatis
 // berdasarkan totalAmount, lalu di-lock ke PO ini (approvalStrategyId + submittedAt).
+//
+// BACKLOG REFACTOR: endpoint ini SEBELUMNYA tidak punya permission guard
+// sama sekali (cuma cek tenantId) — siapapun yang login, role apapun,
+// bisa submit PO tenant manapun. Sekarang table-driven lewat
+// hasPermission("po.submit"), default role purchasing (+ admin).
 export async function POST(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
 
@@ -17,7 +23,19 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const tenantId = session.user.tenantId;
+  const { tenantId, role } = session.user;
+
+  try {
+    await assertPermission(tenantId, role, "po.submit");
+  } catch (err) {
+    if (err instanceof PermissionDeniedError) {
+      return NextResponse.json(
+        { error: "Anda tidak berwenang submit PO ini" },
+        { status: 403 }
+      );
+    }
+    throw err;
+  }
 
   const po = await prisma.purchaseOrder.findFirst({
     where: { id, tenantId, isDeleted: false },

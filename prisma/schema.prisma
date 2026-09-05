@@ -137,11 +137,154 @@ model POLine {
   @@index([poId])
 }
 
+// ============================================================
+// W5 — Inventory Management (SAP MM Inventory pattern)
+// Arsitektur: StockMovement = source of truth (immutable ledger),
+// InventoryBalance = cache/snapshot untuk performa baca cepat.
+// ============================================================
+
+// Gudang fisik tempat barang disimpan. Satu tenant bisa punya banyak warehouse.
+model Warehouse {
+  id        String    @id @default(uuid())
+  tenantId  String
+  code      String
+  name      String
+  address   String?
+  isActive  Boolean   @default(true)
+  isDeleted Boolean   @default(false)
+  deletedAt DateTime?
+
+  tenant            Tenant             @relation(fields: [tenantId], references: [id])
+  goodsReceipts     GoodsReceipt[]
+  stockMovements    StockMovement[]
+  inventoryBalances InventoryBalance[]
+  transfersFrom     StockTransfer[]    @relation("TransferSource")
+  transfersTo       StockTransfer[]    @relation("TransferDestination")
+
+  @@index([tenantId])
+  @@unique([tenantId, code])
+}
+
+// Master data batch/lot per item. Single source of truth untuk expiryDate —
+// GRLine, StockMovement, dan StockTransferLine semua merujuk ke sini via
+// batchId, BUKAN menyimpan batchNumber/expiryDate mentah masing-masing
+// (supaya tidak ada duplikasi/inkonsistensi sumber kebenaran).
+model Batch {
+  id          String    @id @default(uuid())
+  tenantId    String
+  itemId      String
+  batchNumber String
+  expiryDate  DateTime? // opsional — tidak semua item butuh (jasa, alat non-consumable)
+  createdAt   DateTime  @default(now())
+
+  tenant             Tenant              @relation(fields: [tenantId], references: [id])
+  item               Item                @relation(fields: [itemId], references: [id])
+  grLines            GRLine[]
+  stockMovements     StockMovement[]
+  inventoryBalances  InventoryBalance[]
+  stockTransferLines StockTransferLine[]
+
+  @@index([tenantId])
+  @@unique([tenantId, itemId, batchNumber]) // 1 batch number unik per item per tenant
+}
+
+// SOURCE OF TRUTH pergerakan stok — IMMUTABLE, append-only, TIDAK ADA
+// endpoint edit/delete sama sekali (konsisten dengan prinsip GR immutable).
+// Kalau InventoryBalance dicurigai drift, saldo direkonstruksi dari SUM tabel ini
+// (lihat lib/stockLedger.ts -> rebuildInventoryBalance).
+model StockMovement {
+  id            String   @id @default(uuid())
+  tenantId      String
+  itemId        String
+  warehouseId   String
+  batchId       String?  // nullable — beberapa movement type ke depan mungkin non-batch
+  quantity      Decimal  @db.Decimal(15, 2) // SIGNED: positif = stock in, negatif = stock out
+  movementType  String   // "101" GR receipt | "102" GR reversal | "311" transfer out | "312" transfer in
+  referenceType String   // "GOODS_RECEIPT" | "GOODS_RECEIPT_REVERSAL" | "STOCK_TRANSFER"
+  referenceId   String   // id dokumen sumber (polymorphic, bukan FK relasi langsung)
+  movementDate  DateTime
+  createdBy     String
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  item      Item      @relation(fields: [itemId], references: [id])
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+  batch     Batch?    @relation(fields: [batchId], references: [id])
+  creator   User      @relation(fields: [createdBy], references: [id])
+
+  @@index([tenantId])
+  @@index([itemId, warehouseId, batchId]) // dipakai saat query saldo & rebuild
+  @@index([referenceType, referenceId])
+}
+
+// CACHE/snapshot saldo stok — hasil agregasi StockMovement. HANYA ditulis
+// lewat dua jalur: (1) incremental increment/decrement dalam transaction
+// yang sama saat StockMovement baru dibuat, atau (2) rebuildInventoryBalance().
+// TIDAK ADA endpoint yang boleh menulis field ini secara langsung.
+model InventoryBalance {
+  id          String   @id @default(uuid())
+  tenantId    String
+  itemId      String
+  warehouseId String
+  batchId     String?
+  quantity    Decimal  @db.Decimal(15, 2) @default(0)
+  updatedAt   DateTime @updatedAt
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  item      Item      @relation(fields: [itemId], references: [id])
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+  batch     Batch?    @relation(fields: [batchId], references: [id])
+
+  @@unique([tenantId, itemId, warehouseId, batchId])
+}
+
+// Perpindahan barang antar warehouse. Header+lines dibuat sekaligus,
+// IMMUTABLE (tidak ada edit/delete) — konsisten dengan pola GR.
+// Setiap StockTransferLine menghasilkan SEPASANG StockMovement:
+// "311" (keluar dari sourceWarehouse) dan "312" (masuk ke destinationWarehouse).
+model StockTransfer {
+  id                     String   @id @default(uuid())
+  tenantId               String
+  transferNumber         String   // format: TRF-YYYYMM-0001, per tenant, reset bulanan
+  sourceWarehouseId      String
+  destinationWarehouseId String
+  transferDate           DateTime
+  createdBy              String
+  notes                  String?
+  createdAt              DateTime @default(now())
+
+  tenant               Tenant              @relation(fields: [tenantId], references: [id])
+  sourceWarehouse      Warehouse           @relation("TransferSource", fields: [sourceWarehouseId], references: [id])
+  destinationWarehouse Warehouse           @relation("TransferDestination", fields: [destinationWarehouseId], references: [id])
+  creator              User                @relation(fields: [createdBy], references: [id])
+  lines                StockTransferLine[]
+
+  @@index([tenantId])
+  @@unique([tenantId, transferNumber])
+}
+
+model StockTransferLine {
+  id         String  @id @default(uuid())
+  transferId String
+  itemId     String
+  batchId    String?
+  quantity   Decimal @db.Decimal(15, 2)
+  notes      String?
+
+  transfer StockTransfer @relation(fields: [transferId], references: [id])
+  item     Item          @relation(fields: [itemId], references: [id])
+  batch    Batch?        @relation(fields: [batchId], references: [id])
+
+  @@index([transferId])
+}
+
 model GoodsReceipt {
   id          String   @id @default(uuid())
   tenantId    String
   grNumber    String   // format: GR-YYYYMM-0001, auto-generated per tenant, reset bulanan
   poId        String
+  warehouseId String
   receivedBy  String   // SELALU dari session.user.id — endpoint menolak jika field ini dikirim manual di body
   receiptDate DateTime
   notes       String?
@@ -151,6 +294,7 @@ model GoodsReceipt {
 
   tenant   Tenant        @relation(fields: [tenantId], references: [id])
   po       PurchaseOrder @relation(fields: [poId], references: [id])
+  warehouse Warehouse     @relation(fields: [warehouseId], references: [id])
   receiver User          @relation(fields: [receivedBy], references: [id])
   lines    GRLine[]
 
@@ -163,14 +307,14 @@ model GRLine {
   id               String    @id @default(uuid())
   grId             String
   poLineId         String    // referensi ke PO Line spesifik, bukan itemId langsung
-  batchNumber      String    // nomor lot/batch dari vendor atau internal
-  expiryDate       DateTime? // opsional — tidak semua item butuh (jasa, alat non-consumable, dll)
+  batchId          String
   quantityOrdered  Decimal   @db.Decimal(15, 2) // snapshot POLine.quantity saat GR dibuat — audit trail saja, BUKAN sumber validasi
   quantityReceived Decimal   @db.Decimal(15, 2) // qty diterima untuk batch ini
   notes            String?
 
   goodsReceipt GoodsReceipt @relation(fields: [grId], references: [id])
   poLine       POLine       @relation(fields: [poLineId], references: [id])
+  batch        Batch        @relation(fields: [batchId], references: [id])
 
   @@index([grId])
   @@index([poLineId])
@@ -309,7 +453,9 @@ model User {
   createdInvoices       Invoice[] @relation("InvoiceCreator")   
   submittedInvoices     Invoice[] @relation("InvoiceSubmitter") 
   resolvedInvoices      Invoice[] @relation("InvoiceResolver")  
-  paidInvoices          Invoice[] @relation("InvoicePayer")     
+  paidInvoices          Invoice[] @relation("InvoicePayer") 
+  stockMovements  StockMovement[]  
+  stockTransfers  StockTransfer[]      
 
 
   @@index([tenantId])
@@ -350,6 +496,10 @@ model Item {
 
   tenant      Tenant  @relation(fields: [tenantId], references: [id])
   poLines     POLine[]
+  batches           Batch[]             
+  stockMovements    StockMovement[]     
+  inventoryBalances InventoryBalance[]  
+  stockTransferLines StockTransferLine[] 
 
   @@index([tenantId])
   @@unique([tenantId, code])
@@ -371,4 +521,9 @@ model Tenant{
   goodsReceipts      GoodsReceipt[]
   invoices           Invoice[]
   rolePermissions    RolePermission[]
+  warehouses        Warehouse[]         
+  batches           Batch[]             
+  stockMovements    StockMovement[]     
+  inventoryBalances InventoryBalance[]  
+  stockTransfers    StockTransfer[]     
 }

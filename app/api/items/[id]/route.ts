@@ -2,14 +2,10 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import { updateItemSchema } from "@/lib/validations/item";
+import { assertPermission, PermissionDeniedError } from "@/lib/hasPermission";
 
-// Next.js 16: params sekarang berupa Promise, bukan object biasa.
-// Harus di-`await` dulu sebelum diakses. Lupa await = params.id jadi
-// `undefined` diam-diam TANPA error, dan itu bisa bikin Prisma drop
-// filter `id` dari where clause (bug yang pernah kejadian di vendor).
 type RouteParams = { params: Promise<{ id: string }> };
 
-// Ambil satu item berdasarkan ID
 export async function GET(_: Request, { params }: RouteParams) {
   const session = await auth();
   if (!session?.user) {
@@ -24,7 +20,7 @@ export async function GET(_: Request, { params }: RouteParams) {
   const item = await prisma.item.findFirst({
     where: {
       id,
-      tenantId: session.user.tenantId, // Pastikan item milik tenant ini
+      tenantId: session.user.tenantId,
       isDeleted: false,
     },
   });
@@ -35,11 +31,26 @@ export async function GET(_: Request, { params }: RouteParams) {
   return NextResponse.json(item);
 }
 
-// Update item
+// BACKLOG REFACTOR: sebelumnya tidak ada permission guard sama sekali.
+// Sekarang table-driven lewat hasPermission("item.manage").
 export async function PUT(req: Request, { params }: RouteParams) {
   const session = await auth();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { tenantId, role } = session.user;
+
+  try {
+    await assertPermission(tenantId, role, "item.manage");
+  } catch (err) {
+    if (err instanceof PermissionDeniedError) {
+      return NextResponse.json(
+        { error: "Anda tidak berwenang mengubah item" },
+        { status: 403 }
+      );
+    }
+    throw err;
+  }
 
   const { id } = await params;
   if (!id) {
@@ -49,8 +60,6 @@ export async function PUT(req: Request, { params }: RouteParams) {
   try {
     const body = await req.json();
 
-    // Validasi pakai Zod — mencegah field liar (mis. tenantId, isDeleted)
-    // ikut ke-spread ke Prisma update
     const result = updateItemSchema.safeParse(body);
     if (!result.success) {
       return NextResponse.json(
@@ -62,22 +71,19 @@ export async function PUT(req: Request, { params }: RouteParams) {
       );
     }
 
-    // updateMany dipakai (bukan update) supaya kita bisa cek affected count
-    // tanpa Prisma throw error mentah kalau id/tenantId gak match.
     const updateResult = await prisma.item.updateMany({
       where: {
         id,
-        tenantId: session.user.tenantId, // Cegah update item tenant lain
+        tenantId,
         isDeleted: false,
       },
-      data: result.data, // sudah tervalidasi & typed, aman di-spread
+      data: result.data,
     });
 
     if (updateResult.count === 0) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    // updateMany gak return record-nya, jadi fetch ulang buat response
     const item = await prisma.item.findUnique({ where: { id } });
 
     return NextResponse.json(item);
@@ -90,11 +96,26 @@ export async function PUT(req: Request, { params }: RouteParams) {
   }
 }
 
-// Soft delete item
+// BACKLOG REFACTOR: sebelumnya tidak ada permission guard sama sekali.
+// Sekarang table-driven lewat hasPermission("item.manage").
 export async function DELETE(_: Request, { params }: RouteParams) {
   const session = await auth();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { tenantId, role } = session.user;
+
+  try {
+    await assertPermission(tenantId, role, "item.manage");
+  } catch (err) {
+    if (err instanceof PermissionDeniedError) {
+      return NextResponse.json(
+        { error: "Anda tidak berwenang menghapus item" },
+        { status: 403 }
+      );
+    }
+    throw err;
+  }
 
   const { id } = await params;
   if (!id) {
@@ -105,8 +126,8 @@ export async function DELETE(_: Request, { params }: RouteParams) {
     const deleteResult = await prisma.item.updateMany({
       where: {
         id,
-        tenantId: session.user.tenantId, // Cegah hapus item tenant lain
-        isDeleted: false, // gak bisa "hapus" item yang udah dihapus
+        tenantId,
+        isDeleted: false,
       },
       data: {
         isDeleted: true,

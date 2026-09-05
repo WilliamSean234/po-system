@@ -16,6 +16,7 @@ const PERMISSION_CATALOG = [
   { key: "po.create", category: "purchase_order", description: "Membuat Purchase Order baru" },
   { key: "po.submit", category: "purchase_order", description: "Submit PO untuk approval" },
   { key: "po.send", category: "purchase_order", description: "Kirim PO ke vendor (APPROVED → PO_SENT)" },
+  { key: "po.close", category: "purchase_order", description: "Menutup PO yang sudah diterima penuh (RECEIVED → CLOSED)" },
   { key: "po.cancel", category: "purchase_order", description: "Cancel Purchase Order" },
   // goods_receipt
   { key: "gr.create", category: "goods_receipt", description: "Input Goods Receipt" },
@@ -36,9 +37,23 @@ const PERMISSION_CATALOG = [
 // karena admin selalu full-access secara hardcode di hasPermission helper (W3T3),
 // bukan lewat baris RolePermission — konsisten dengan alasan anti-lockout.
 const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
-  purchasing: ["po.create", "po.submit", "po.send", "po.cancel", "vendor.manage", "item.manage"],
+  purchasing: ["po.create", "po.submit", "po.send", "po.close", "po.cancel", "vendor.manage", "item.manage"],
   warehouse: ["gr.create"],
   finance: ["invoice.create", "invoice.submit", "invoice.resolve_dispute", "invoice.mark_paid", "invoice.cancel"],
+};
+
+// ============================================================
+// W5 — Inventory Management: Batch seed data per item
+// ============================================================
+// Mapping item.code -> data batch dummy. expiryDate sengaja hanya diisi
+// untuk item consumable (Tinta Printer) — membuktikan field ini memang
+// OPTIONAL di model Batch, bukan wajib untuk semua item (jasa, alat
+// non-consumable seperti Meja/Laptop tidak butuh tanggal kadaluarsa).
+const BATCH_SEED_DATA: Record<string, { batchNumber: string; expiryDate: Date | null }> = {
+  "ITM-001": { batchNumber: "BATCH-2026-001", expiryDate: null }, // Kertas HVS — non-perishable
+  "ITM-002": { batchNumber: "BATCH-2026-002", expiryDate: new Date("2027-06-30") }, // Tinta Printer — ada expiry
+  "ITM-003": { batchNumber: "BATCH-2026-003", expiryDate: null }, // Meja Kantor — non-perishable
+  "ITM-004": { batchNumber: "BATCH-2026-004", expiryDate: null }, // Laptop — non-perishable
 };
 
 async function main() {
@@ -205,7 +220,62 @@ async function main() {
   ]);
   console.log("✅ Items:", items.map((i) => i.name).join(", "));
 
-  // ── 5. PERMISSIONS (W3T2) ────────────────────────────────
+  // ── 5. WAREHOUSES (W5 — Inventory Management) ─────────────
+  // Dummy 2 warehouse supaya fitur Stock Transfer (antar warehouse) langsung
+  // bisa ditest begitu modulnya jadi — tidak perlu tambah data manual lagi.
+  const warehouses = await Promise.all([
+    prisma.warehouse.upsert({
+      where: { tenantId_code: { tenantId: tenant.id, code: "WH-001" } },
+      update: {},
+      create: {
+        tenantId: tenant.id,
+        code: "WH-001",
+        name: "Gudang Utama",
+        address: "Jl. Industri No. 10, Jakarta",
+      },
+    }),
+    prisma.warehouse.upsert({
+      where: { tenantId_code: { tenantId: tenant.id, code: "WH-002" } },
+      update: {},
+      create: {
+        tenantId: tenant.id,
+        code: "WH-002",
+        name: "Gudang Cabang Surabaya",
+        address: "Jl. Raya Darmo No. 45, Surabaya",
+      },
+    }),
+  ]);
+  console.log("✅ Warehouses:", warehouses.map((w) => w.name).join(", "));
+
+  // ── 6. BATCHES (W5 — Inventory Management) ────────────────
+  // 1 batch dummy per item, supaya GRLine.batchId (sekarang WAJIB, ganti dari
+  // batchNumber+expiryDate string bebas) langsung punya data valid untuk
+  // dipakai saat testing create GR lewat Postman. Lookup pakai item.code,
+  // jadi aman meski urutan array `items` di atas berubah nanti.
+  const batches = await Promise.all(
+    items.map((item) => {
+      const seedInfo = BATCH_SEED_DATA[item.code];
+      return prisma.batch.upsert({
+        where: {
+          tenantId_itemId_batchNumber: {
+            tenantId: tenant.id,
+            itemId: item.id,
+            batchNumber: seedInfo.batchNumber,
+          },
+        },
+        update: {},
+        create: {
+          tenantId: tenant.id,
+          itemId: item.id,
+          batchNumber: seedInfo.batchNumber,
+          expiryDate: seedInfo.expiryDate,
+        },
+      });
+    })
+  );
+  console.log("✅ Batches:", batches.map((b) => b.batchNumber).join(", "));
+
+  // ── 7. PERMISSIONS (W3T2) ────────────────────────────────
   // Upsert seluruh katalog permission by key — aman dijalankan berulang,
   // dan aman ditambah entry baru kapan pun tanpa migration.
   const permissions = await Promise.all(
@@ -222,7 +292,7 @@ async function main() {
   // Map key -> id, dipakai buat assign RolePermission di bawah
   const permissionIdByKey = new Map(permissions.map((p) => [p.key, p.id]));
 
-  // ── 6. ROLE PERMISSIONS (W3T2) ───────────────────────────
+  // ── 8. ROLE PERMISSIONS (W3T2) ───────────────────────────
   // Assign default mapping role -> permission untuk tenant demo ini.
   // Di production, blok ini idealnya dipanggil ulang tiap kali tenant baru
   // dibuat (saat onboarding), bukan cuma sekali di seed — dicatat di
@@ -266,6 +336,8 @@ async function main() {
   console.log("Login dengan:");
   console.log("  Email    : admin@demo.com");
   console.log("  Password : password123");
+  console.log("─────────────────────────────");
+  console.log(`Warehouses: ${warehouses.length} | Batches: ${batches.length}`);
   console.log("─────────────────────────────");
 }
 

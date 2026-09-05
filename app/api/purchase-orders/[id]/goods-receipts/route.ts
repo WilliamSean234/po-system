@@ -8,20 +8,25 @@ import {
   GoodsReceiptValidationError,
 } from "@/lib/goodsReceiptValidation";
 import { generateGrNumberWithRetry } from "@/lib/generateGrNumber";
+import { assertPermission, PermissionDeniedError } from "@/lib/hasPermission";
 
 // CATATAN types/next-auth.d.ts: file ini WAJIB ada di project (di
-// types/next-auth.d.ts) karena kedua handler di bawah (POST & GET)
-// sama-sama mengakses session.user.tenantId (dan POST juga session.user.id).
-// Tanpa module augmentation itu, TypeScript menganggap Session["user"]
-// cuma punya field bawaan NextAuth (name/email/image) — akses field
-// custom ini akan error type-check saat build, dan developer jadi
-// tergoda pakai `as any` yang menutupi bug runtime (misal salah
-// tenantId karena typo, baru ketahuan saat production, bukan saat compile).
+// types/next-auth.d.ts) karena handler di bawah mengakses
+// session.user.tenantId, session.user.id, DAN session.user.role. Tanpa
+// module augmentation itu, TypeScript menganggap Session["user"] cuma
+// punya field bawaan NextAuth (name/email/image) — akses field custom
+// ini akan error type-check saat build, dan developer jadi tergoda pakai
+// `as any`, yang menyembunyikan bug permission (misal role check salah)
+// sampai ketahuan production.
 
 /**
  * POST /api/purchase-orders/[id]/goods-receipts
  * Membuat Goods Receipt baru untuk PO yang berstatus PO_SENT.
  * Immutable setelah dibuat — tidak ada PUT/PATCH untuk endpoint ini.
+ *
+ * BACKLOG REFACTOR: endpoint ini SEBELUMNYA tidak punya permission guard
+ * sama sekali. Sekarang table-driven lewat hasPermission("gr.create"),
+ * default role warehouse (+ admin).
  */
 export async function POST(
   request: NextRequest,
@@ -36,7 +41,19 @@ export async function POST(
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const { tenantId, id: userId } = session.user;
+  const { tenantId, id: userId, role } = session.user;
+
+  try {
+    await assertPermission(tenantId, role, "gr.create");
+  } catch (err) {
+    if (err instanceof PermissionDeniedError) {
+      return NextResponse.json(
+        { error: "Anda tidak berwenang membuat Goods Receipt" },
+        { status: 403 }
+      );
+    }
+    throw err;
+  }
 
   const body = await request.json();
   const parsed = createGoodsReceiptSchema.safeParse(body);
@@ -147,8 +164,9 @@ export async function POST(
 /**
  * GET /api/purchase-orders/[id]/goods-receipts
  * List semua Goods Receipt untuk 1 PO tertentu (tenant-scoped).
- * Bisa lebih dari 1 GR per PO (partial receipt, tiap kedatangan barang = 1 GR baru).
- * Diurutkan dari yang terbaru, supaya histori penerimaan gampang ditelusuri.
+ * Tidak diberi permission guard — read-only, konsisten dengan pola GET
+ * lain di project ini (GET PO list, GET vendor list, dst juga tidak
+ * dijaga permission, hanya tenant-scoped).
  */
 export async function GET(
   request: NextRequest,
@@ -165,8 +183,6 @@ export async function GET(
   }
   const { tenantId } = session.user;
 
-  // Pastikan PO memang milik tenant ini SEBELUM kembalikan GR-nya.
-  // Mencegah user tenant A melihat GR milik PO tenant B walau tebak ID PO-nya.
   const po = await prisma.purchaseOrder.findFirst({
     where: { id: poId, tenantId, isDeleted: false },
     select: { id: true },
@@ -181,12 +197,12 @@ export async function GET(
       lines: {
         include: {
           poLine: {
-            include: { item: true }, // biar frontend langsung dapat nama item, tanpa fetch terpisah
+            include: { item: true },
           },
         },
       },
       receiver: {
-        select: { id: true, name: true, email: true }, // jangan expose password
+        select: { id: true, name: true, email: true },
       },
     },
     orderBy: { createdAt: "desc" },

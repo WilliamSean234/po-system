@@ -14,6 +14,7 @@ export type PermissionKey =
   | "po.create"
   | "po.submit"
   | "po.send"
+  | "po.close"
   | "po.cancel"
   | "gr.create"
   | "invoice.create"
