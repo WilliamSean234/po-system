@@ -79,7 +79,8 @@ export async function POST(
   const input = parsed.data;
 
   try {
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(
+      async (tx) => {
       const po = await tx.purchaseOrder.findFirst({
         where: { id: poId, tenantId, isDeleted: false },
         include: { lines: true },
@@ -208,7 +209,16 @@ export async function POST(
       }
 
       return createdGr;
-    });
+      },
+      {
+        // Default interactive transaction timeout Prisma = 5000ms. Transaction
+        // ini sekarang jauh lebih berat (validasi qty+batch, create GR+lines,
+        // lalu recordStockMovement per line = beberapa query tiap line) dan
+        // ditambah latensi Neon serverless, jadi default 5s terlampaui (P2028).
+        timeout: 15000, // maks durasi eksekusi transaction
+        maxWait: 10000, // maks waktu menunggu koneksi dari pool sebelum transaction mulai
+      }
+    );
 
     return NextResponse.json(result, { status: 201 });
   } catch (error) {

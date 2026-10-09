@@ -220,7 +220,150 @@ async function main() {
   ]);
   console.log("✅ Items:", items.map((i) => i.name).join(", "));
 
-  // ── 5. WAREHOUSES (W5 — Inventory Management) ─────────────
+  // ── 5. APPROVAL LEVELS (SAP Release Strategy pattern) ─────
+  // ApprovalLevel TIDAK punya @@unique(tenantId, name) di schema.prisma —
+  // jadi upsert manual: findFirst dulu, create kalau belum ada. Aman
+  // dijalankan berulang (idempotent), tidak akan bikin duplikat.
+  async function findOrCreateApprovalLevel(name: string) {
+    const existing = await prisma.approvalLevel.findFirst({
+      where: { tenantId: tenant.id, name },
+    });
+    if (existing) return existing;
+    return prisma.approvalLevel.create({
+      data: { tenantId: tenant.id, name },
+    });
+  }
+
+  const supervisorLevel = await findOrCreateApprovalLevel("Supervisor");
+  const managerLevel = await findOrCreateApprovalLevel("Manager");
+
+  // Assign approver per level (M:N — 1 level bisa punya lebih dari 1 approver).
+  // Supervisor -> Finance User, Manager -> Admin User. SENGAJA BUKAN
+  // Purchasing User (pembuat PO) supaya tidak ada skenario self-approval
+  // di data demo ini.
+  const financeUser = users.find((u) => u.email === "finance@demo.com")!;
+  const adminUser = users.find((u) => u.email === "admin@demo.com")!;
+
+  await Promise.all([
+    prisma.approvalLevelUser.upsert({
+      where: {
+        approvalLevelId_userId: {
+          approvalLevelId: supervisorLevel.id,
+          userId: financeUser.id,
+        },
+      },
+      update: {},
+      create: {
+        approvalLevelId: supervisorLevel.id,
+        userId: financeUser.id,
+      },
+    }),
+    prisma.approvalLevelUser.upsert({
+      where: {
+        approvalLevelId_userId: {
+          approvalLevelId: managerLevel.id,
+          userId: adminUser.id,
+        },
+      },
+      update: {},
+      create: {
+        approvalLevelId: managerLevel.id,
+        userId: adminUser.id,
+      },
+    }),
+  ]);
+  console.log("✅ Approval Levels: Supervisor (approver: Finance), Manager (approver: Admin)");
+
+  // ── 6. APPROVAL STRATEGIES (range nominal -> strategi approval) ──
+  // Menggantikan ApprovalConfig lama (W1T8). Range HARUS kontigu tanpa
+  // celah — Low Value berakhir di Rp5.000.000, High Value mulai dari
+  // Rp5.000.001 — supaya tidak ada nominal PO yang gagal cocok ke
+  // strategi manapun saat submit. ApprovalStrategy juga tidak punya
+  // @@unique(tenantId, name), jadi pola findFirst+create yang sama dipakai.
+  async function findOrCreateApprovalStrategy(params: {
+    name: string;
+    minAmount: number;
+    maxAmount: number | null;
+    isSequential: boolean;
+  }) {
+    const existing = await prisma.approvalStrategy.findFirst({
+      where: { tenantId: tenant.id, name: params.name },
+    });
+    if (existing) return existing;
+    return prisma.approvalStrategy.create({
+      data: {
+        tenantId: tenant.id,
+        name: params.name,
+        minAmount: params.minAmount,
+        maxAmount: params.maxAmount,
+        isSequential: params.isSequential,
+      },
+    });
+  }
+
+  const lowValueStrategy = await findOrCreateApprovalStrategy({
+    name: "Low Value Purchase",
+    minAmount: 0,
+    maxAmount: 5_000_000,
+    isSequential: false, // 1 level saja, urutan tidak relevan
+  });
+
+  const highValueStrategy = await findOrCreateApprovalStrategy({
+    name: "High Value Purchase",
+    minAmount: 5_000_001,
+    maxAmount: null, // tak terbatas — HANYA BOLEH ADA 1 strategy per tenant dengan maxAmount null
+    isSequential: true, // Supervisor harus approve dulu, baru Manager
+  });
+
+  await Promise.all([
+    prisma.approvalStrategyStep.upsert({
+      where: {
+        approvalStrategyId_approvalLevelId: {
+          approvalStrategyId: lowValueStrategy.id,
+          approvalLevelId: supervisorLevel.id,
+        },
+      },
+      update: {},
+      create: {
+        approvalStrategyId: lowValueStrategy.id,
+        approvalLevelId: supervisorLevel.id,
+        sequence: 1,
+      },
+    }),
+    prisma.approvalStrategyStep.upsert({
+      where: {
+        approvalStrategyId_approvalLevelId: {
+          approvalStrategyId: highValueStrategy.id,
+          approvalLevelId: supervisorLevel.id,
+        },
+      },
+      update: {},
+      create: {
+        approvalStrategyId: highValueStrategy.id,
+        approvalLevelId: supervisorLevel.id,
+        sequence: 1,
+      },
+    }),
+    prisma.approvalStrategyStep.upsert({
+      where: {
+        approvalStrategyId_approvalLevelId: {
+          approvalStrategyId: highValueStrategy.id,
+          approvalLevelId: managerLevel.id,
+        },
+      },
+      update: {},
+      create: {
+        approvalStrategyId: highValueStrategy.id,
+        approvalLevelId: managerLevel.id,
+        sequence: 2,
+      },
+    }),
+  ]);
+  console.log(
+    "✅ Approval Strategies: Low Value Purchase (Rp0–Rp5.000.000, non-sequential, Supervisor), High Value Purchase (Rp5.000.001+, sequential, Supervisor→Manager)"
+  );
+
+  // ── 7. WAREHOUSES (W5 — Inventory Management) ─────────────
   // Dummy 2 warehouse supaya fitur Stock Transfer (antar warehouse) langsung
   // bisa ditest begitu modulnya jadi — tidak perlu tambah data manual lagi.
   const warehouses = await Promise.all([
@@ -247,7 +390,7 @@ async function main() {
   ]);
   console.log("✅ Warehouses:", warehouses.map((w) => w.name).join(", "));
 
-  // ── 6. BATCHES (W5 — Inventory Management) ────────────────
+  // ── 8. BATCHES (W5 — Inventory Management) ────────────────
   // 1 batch dummy per item, supaya GRLine.batchId (sekarang WAJIB, ganti dari
   // batchNumber+expiryDate string bebas) langsung punya data valid untuk
   // dipakai saat testing create GR lewat Postman. Lookup pakai item.code,
@@ -275,7 +418,7 @@ async function main() {
   );
   console.log("✅ Batches:", batches.map((b) => b.batchNumber).join(", "));
 
-  // ── 7. PERMISSIONS (W3T2) ────────────────────────────────
+  // ── 9. PERMISSIONS (W3T2) ────────────────────────────────
   // Upsert seluruh katalog permission by key — aman dijalankan berulang,
   // dan aman ditambah entry baru kapan pun tanpa migration.
   const permissions = await Promise.all(
@@ -292,7 +435,7 @@ async function main() {
   // Map key -> id, dipakai buat assign RolePermission di bawah
   const permissionIdByKey = new Map(permissions.map((p) => [p.key, p.id]));
 
-  // ── 8. ROLE PERMISSIONS (W3T2) ───────────────────────────
+  // ── 10. ROLE PERMISSIONS (W3T2) ───────────────────────────
   // Assign default mapping role -> permission untuk tenant demo ini.
   // Di production, blok ini idealnya dipanggil ulang tiap kali tenant baru
   // dibuat (saat onboarding), bukan cuma sekali di seed — dicatat di
@@ -337,7 +480,9 @@ async function main() {
   console.log("  Email    : admin@demo.com");
   console.log("  Password : password123");
   console.log("─────────────────────────────");
-  console.log(`Warehouses: ${warehouses.length} | Batches: ${batches.length}`);
+  console.log(
+    `Warehouses: ${warehouses.length} | Batches: ${batches.length} | Approval Levels: 2 | Approval Strategies: 2`
+  );
   console.log("─────────────────────────────");
 }
 
