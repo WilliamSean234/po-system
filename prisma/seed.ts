@@ -20,6 +20,8 @@ const PERMISSION_CATALOG = [
   { key: "po.cancel", category: "purchase_order", description: "Cancel Purchase Order" },
   // goods_receipt
   { key: "gr.create", category: "goods_receipt", description: "Input Goods Receipt" },
+  // inventory (W5T3)
+  { key: "inventory.transfer", category: "inventory", description: "Buat Stock Transfer antar warehouse" },
   // invoice
   { key: "invoice.create", category: "invoice", description: "Input invoice (status DRAFT)" },
   { key: "invoice.submit", category: "invoice", description: "Submit invoice untuk matching" },
@@ -38,7 +40,7 @@ const PERMISSION_CATALOG = [
 // bukan lewat baris RolePermission — konsisten dengan alasan anti-lockout.
 const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
   purchasing: ["po.create", "po.submit", "po.send", "po.close", "po.cancel", "vendor.manage", "item.manage"],
-  warehouse: ["gr.create"],
+  warehouse: ["gr.create", "inventory.transfer"],
   finance: ["invoice.create", "invoice.submit", "invoice.resolve_dispute", "invoice.mark_paid", "invoice.cancel"],
 };
 
