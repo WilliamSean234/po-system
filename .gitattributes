@@ -1,0 +1,14 @@
+# Normalisasi line ending: semua file teks disimpan LF di repo,
+# apa pun OS developer (Windows/Linux/macOS) dan server CI/Docker.
+* text=auto eol=lf
+
+# File biner: jangan disentuh.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.node binary
