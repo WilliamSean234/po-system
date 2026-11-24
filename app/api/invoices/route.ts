@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { invoiceCreateSchema } from "@/lib/validations/invoice";
-import { generateInvoiceNumberWithRetry } from "@/lib/invoiceNumber";
+import { DOC_TYPE, nextDocumentNumber } from "@/lib/documentSequence";
 import { assertPermission, PermissionDeniedError } from "@/lib/hasPermission";
 
 // GET /api/invoices
@@ -32,9 +32,8 @@ export async function GET() {
 
 // POST /api/invoices
 // Create Invoice baru: header + lines sekaligus, status selalu DRAFT.
-// Dibungkus prisma.$transaction (BEDA dari PO yang tidak transaction-wrapped)
-// karena generateInvoiceNumberWithRetry butuh tx, dan supaya pola yang sama
-// konsisten dipakai lagi nanti di endpoint /submit yang lebih sensitif
+// Dibungkus prisma.$transaction supaya nomor invoice (DocumentSequence) dan insert
+// atomik, dan pola yang sama dipakai lagi di endpoint /submit yang lebih sensitif
 // terhadap race condition (matching quantity terhadap GR).
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -105,34 +104,32 @@ export async function POST(req: NextRequest) {
   const totalAmount = linesWithTotal.reduce((sum, line) => sum + line.totalPrice, 0);
 
   try {
-    let createdInvoice: Awaited<ReturnType<typeof prisma.invoice.findUniqueOrThrow>> | null = null;
+    const createdInvoice = await prisma.$transaction(async (tx) => {
+      // Nomor diambil tepat sebelum insert (lihat lib/documentSequence.ts).
+      const invoiceNumber = await nextDocumentNumber(tx, tenantId, DOC_TYPE.INVOICE);
 
-    await prisma.$transaction(async (tx) => {
-      await generateInvoiceNumberWithRetry(tx, tenantId, async (invoiceNumber) => {
-        const invoice = await tx.invoice.create({
-          data: {
-            tenantId,
-            invoiceNumber,
-            poId,
-            status: "DRAFT",
-            invoiceDate: new Date(invoiceDate),
-            dueDate: dueDate ? new Date(dueDate) : null,
-            totalAmount,
-            notes,
-            createdBy: userId,
-            lines: {
-              create: linesWithTotal.map((line) => ({
-                poLineId: line.poLineId,
-                quantity: line.quantity,
-                unitPrice: line.unitPrice,
-                totalPrice: line.totalPrice,
-                notes: line.notes,
-              })),
-            },
+      return tx.invoice.create({
+        data: {
+          tenantId,
+          invoiceNumber,
+          poId,
+          status: "DRAFT",
+          invoiceDate: new Date(invoiceDate),
+          dueDate: dueDate ? new Date(dueDate) : null,
+          totalAmount,
+          notes,
+          createdBy: userId,
+          lines: {
+            create: linesWithTotal.map((line) => ({
+              poLineId: line.poLineId,
+              quantity: line.quantity,
+              unitPrice: line.unitPrice,
+              totalPrice: line.totalPrice,
+              notes: line.notes,
+            })),
           },
-          include: { lines: true, po: { include: { vendor: true } } },
-        });
-        createdInvoice = invoice;
+        },
+        include: { lines: true, po: { include: { vendor: true } } },
       });
     });
 
@@ -140,7 +137,7 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error("Gagal membuat invoice:", err);
     return NextResponse.json(
-      { error: "Gagal membuat invoice karena konflik nomor urut. Coba lagi." },
+      { error: "Gagal membuat invoice. Coba lagi." },
       { status: 500 }
     );
   }

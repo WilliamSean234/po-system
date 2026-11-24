@@ -23,7 +23,7 @@ export class GoodsReceiptValidationError extends Error {
  * (bukan `prisma` global) karena create GR HARUS dibungkus dalam satu
  * `prisma.$transaction` supaya create GoodsReceipt + GRLine + update
  * status PurchaseOrder (kalau jadi RECEIVED) atomic — kalau salah satu
- * gagal, semua di-rollback. Ini pola yang sama dipakai di generatePoNumber.
+ * gagal, semua di-rollback. Pola yang sama dipakai di nextDocumentNumber (lib/documentSequence.ts).
  */
 type TransactionClient = Prisma.TransactionClient;
 
