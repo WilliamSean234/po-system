@@ -2,14 +2,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth"; // sesuaikan path sesuai setup NextAuth v5 kamu
 import { prisma } from "@/lib/prisma";
-import { Prisma } from "@/lib/generated/prisma";
 import { createGoodsReceiptSchema } from "@/lib/validations/goodsReceipt";
 import {
   validateReceiptQuantity,
   isPurchaseOrderFullyReceived,
   GoodsReceiptValidationError,
 } from "@/lib/goodsReceiptValidation";
-import { generateGrNumberWithRetry } from "@/lib/generateGrNumber";
+import { DOC_TYPE, nextDocumentNumber } from "@/lib/documentSequence";
 import { assertPermission, PermissionDeniedError } from "@/lib/hasPermission";
 import { recordStockMovement, MOVEMENT_TYPE, REFERENCE_TYPE } from "@/lib/stockLedger";
 
@@ -107,98 +106,91 @@ export async function POST(
 
       const poLineMap = new Map(po.lines.map((line) => [line.id, line]));
 
-      // FIX: tipe sebelumnya (Awaited<ReturnType<typeof tx.goodsReceipt.findFirstOrThrow>>)
-      // diambil dari signature method TANPA argumen, jadi TypeScript menganggap
-      // hasilnya GoodsReceipt polos tanpa relasi `lines` — padahal create() di
-      // bawah selalu dipanggil dengan include: { lines: true }. Pakai
-      // Prisma.GoodsReceiptGetPayload supaya tipe createdGr eksplisit menyertakan
-      // bentuk include yang sebenarnya dipakai (dibutuhkan W5 Inventory untuk
-      // loop createdGr.lines saat memanggil recordStockMovement).
-      let createdGr: Prisma.GoodsReceiptGetPayload<{ include: { lines: true } }> | null = null;
-
-      await generateGrNumberWithRetry(tx, tenantId, async (grNumber) => {
-        for (const line of input.lines) {
-          const poLine = poLineMap.get(line.poLineId);
-          if (!poLine) {
-            throw new Response(
-              `poLineId ${line.poLineId} bukan bagian dari PO ini`,
-              { status: 400 }
-            );
-          }
-
-          try {
-            await validateReceiptQuantity(
-              tx,
-              line.poLineId,
-              Number(poLine.quantity),
-              line.quantityReceived
-            );
-          } catch (err) {
-            if (err instanceof GoodsReceiptValidationError) {
-              throw new Response(err.message, { status: 400 });
-            }
-            throw err;
-          }
-
-          // W5 Inventory: batchId yang dikirim harus benar-benar merujuk ke
-          // Batch milik item yang sama dengan poLine ini — mencegah salah
-          // kirim batchId item lain (mis. batch milik Item B dipakai untuk
-          // menerima Item A, yang akan membuat data stok per-batch salah).
-          const batch = await tx.batch.findFirst({
-            where: { id: line.batchId, tenantId, itemId: poLine.itemId },
-          });
-          if (!batch) {
-            throw new Response(
-              `batchId ${line.batchId} tidak valid untuk item pada poLineId ${line.poLineId} (batch harus terdaftar untuk item yang sama)`,
-              { status: 400 }
-            );
-          }
+      for (const line of input.lines) {
+        const poLine = poLineMap.get(line.poLineId);
+        if (!poLine) {
+          throw new Response(
+            `poLineId ${line.poLineId} bukan bagian dari PO ini`,
+            { status: 400 }
+          );
         }
 
-        createdGr = await tx.goodsReceipt.create({
-          data: {
-            tenantId,
-            grNumber,
-            poId,
-            warehouseId: input.warehouseId, // BARU (W5 Inventory)
-            receivedBy: userId,
-            receiptDate: input.receiptDate,
-            notes: input.notes,
-            lines: {
-              create: input.lines.map((line) => ({
-                poLineId: line.poLineId,
-                batchId: line.batchId, // GANTI dari batchNumber+expiryDate (W5 Inventory)
-                quantityOrdered: poLineMap.get(line.poLineId)!.quantity,
-                quantityReceived: line.quantityReceived,
-                notes: line.notes,
-              })),
-            },
-          },
-          include: { lines: true },
-        });
-
-        // W5 Inventory: tiap GRLine yang berhasil dibuat menghasilkan 1
-        // StockMovement "101" (goods receipt in) + update InventoryBalance
-        // secara incremental — dipanggil di dalam transaction yang sama
-        // supaya atomik dengan pembuatan GR (rollback bersama kalau gagal).
-        for (const line of createdGr.lines) {
-          const poLine = poLineMap.get(line.poLineId)!;
-          await recordStockMovement({
+        try {
+          await validateReceiptQuantity(
             tx,
-            tenantId,
-            itemId: poLine.itemId,
-            warehouseId: input.warehouseId,
-            batchId: line.batchId,
-            quantity: line.quantityReceived, // signed positif = stock in
-            movementType: MOVEMENT_TYPE.GR_RECEIPT,
-            referenceType: REFERENCE_TYPE.GOODS_RECEIPT,
-            referenceId: createdGr.id,
-            movementDate: input.receiptDate,
-            createdBy: userId,
-            notes: `GR ${grNumber}`,
-          });
+            line.poLineId,
+            Number(poLine.quantity),
+            line.quantityReceived
+          );
+        } catch (err) {
+          if (err instanceof GoodsReceiptValidationError) {
+            throw new Response(err.message, { status: 400 });
+          }
+          throw err;
         }
+
+        // W5 Inventory: batchId yang dikirim harus benar-benar merujuk ke
+        // Batch milik item yang sama dengan poLine ini — mencegah salah
+        // kirim batchId item lain (mis. batch milik Item B dipakai untuk
+        // menerima Item A, yang akan membuat data stok per-batch salah).
+        const batch = await tx.batch.findFirst({
+          where: { id: line.batchId, tenantId, itemId: poLine.itemId },
+        });
+        if (!batch) {
+          throw new Response(
+            `batchId ${line.batchId} tidak valid untuk item pada poLineId ${line.poLineId} (batch harus terdaftar untuk item yang sama)`,
+            { status: 400 }
+          );
+        }
+      }
+
+      // Nomor GR diambil SETELAH semua validasi lolos, tepat sebelum insert, supaya lock
+      // baris sequence ditahan sesingkat mungkin (lihat lib/documentSequence.ts).
+      const grNumber = await nextDocumentNumber(tx, tenantId, DOC_TYPE.GR);
+
+      const createdGr = await tx.goodsReceipt.create({
+        data: {
+          tenantId,
+          grNumber,
+          poId,
+          warehouseId: input.warehouseId, // BARU (W5 Inventory)
+          receivedBy: userId,
+          receiptDate: input.receiptDate,
+          notes: input.notes,
+          lines: {
+            create: input.lines.map((line) => ({
+              poLineId: line.poLineId,
+              batchId: line.batchId, // GANTI dari batchNumber+expiryDate (W5 Inventory)
+              quantityOrdered: poLineMap.get(line.poLineId)!.quantity,
+              quantityReceived: line.quantityReceived,
+              notes: line.notes,
+            })),
+          },
+        },
+        include: { lines: true },
       });
+
+      // W5 Inventory: tiap GRLine yang berhasil dibuat menghasilkan 1
+      // StockMovement "101" (goods receipt in) + update InventoryBalance
+      // secara incremental — dipanggil di dalam transaction yang sama
+      // supaya atomik dengan pembuatan GR (rollback bersama kalau gagal).
+      for (const line of createdGr.lines) {
+        const poLine = poLineMap.get(line.poLineId)!;
+        await recordStockMovement({
+          tx,
+          tenantId,
+          itemId: poLine.itemId,
+          warehouseId: input.warehouseId,
+          batchId: line.batchId,
+          quantity: line.quantityReceived, // signed positif = stock in
+          movementType: MOVEMENT_TYPE.GR_RECEIPT,
+          referenceType: REFERENCE_TYPE.GOODS_RECEIPT,
+          referenceId: createdGr.id,
+          movementDate: input.receiptDate,
+          createdBy: userId,
+          notes: `GR ${grNumber}`,
+        });
+      }
 
       const fullyReceived = await isPurchaseOrderFullyReceived(tx, poId);
       if (fullyReceived) {

@@ -2,11 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { purchaseOrderCreateSchema } from "@/lib/validations/purchaseOrder";
-import { generatePoNumber } from "@/lib/generatePoNumber";
-import { Prisma } from "@/lib/generated/prisma"; // untuk cek tipe error P2002
-
-// Batas percobaan ulang kalau ada race condition pas generate poNumber
-const MAX_PO_NUMBER_RETRY = 3;
+import { DOC_TYPE, nextDocumentNumber } from "@/lib/documentSequence";
 
 // GET /api/purchase-orders
 // List semua PO milik tenant yang login, termasuk info vendor & jumlah lines
@@ -95,60 +91,36 @@ export async function POST(req: NextRequest) {
     0,
   );
 
-  // Generate poNumber + create, dengan retry kalau kena race condition (unique constraint P2002)
-  let lastError: unknown = null;
+  // Nomor PO + insert dalam SATU transaksi. Nomor diambil dari DocumentSequence
+  // (atomik, tidak mungkin kembar) dan ikut rollback kalau insert gagal, jadi tidak
+  // ada lubang nomor. Lihat lib/documentSequence.ts.
+  const newPo = await prisma.$transaction(async (tx) => {
+    const poNumber = await nextDocumentNumber(tx, tenantId, DOC_TYPE.PO);
 
-  for (let attempt = 0; attempt < MAX_PO_NUMBER_RETRY; attempt++) {
-    try {
-      const poNumber = await generatePoNumber(tenantId);
-
-      const newPo = await prisma.purchaseOrder.create({
-        data: {
-          tenantId,
-          poNumber,
-          vendorId,
-          createdBy,
-          status: "DRAFT",
-          totalAmount,
-          deliveryDate: deliveryDate ? new Date(deliveryDate) : null,
-          notes,
-          lines: {
-            create: linesWithTotal.map((line) => ({
-              itemId: line.itemId,
-              description: line.description,
-              quantity: line.quantity,
-              uom: itemUomMap.get(line.itemId)!,
-              unitPrice: line.unitPrice,
-              totalPrice: line.totalPrice,
-            })),
-          },
+    return tx.purchaseOrder.create({
+      data: {
+        tenantId,
+        poNumber,
+        vendorId,
+        createdBy,
+        status: "DRAFT",
+        totalAmount,
+        deliveryDate: deliveryDate ? new Date(deliveryDate) : null,
+        notes,
+        lines: {
+          create: linesWithTotal.map((line) => ({
+            itemId: line.itemId,
+            description: line.description,
+            quantity: line.quantity,
+            uom: itemUomMap.get(line.itemId)!,
+            unitPrice: line.unitPrice,
+            totalPrice: line.totalPrice,
+          })),
         },
-        include: { lines: true, vendor: true },
-      });
+      },
+      include: { lines: true, vendor: true },
+    });
+  });
 
-      return NextResponse.json(newPo, { status: 201 });
-    } catch (err) {
-      // P2002 = unique constraint violation. Kemungkinan besar poNumber kena race condition
-      // (dua request create PO bersamaan dapat nomor urut yang sama). Coba generate ulang.
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === "P2002"
-      ) {
-        lastError = err;
-        continue; // retry loop
-      }
-      // Error lain (bukan soal poNumber) → langsung lempar, jangan retry percuma
-      throw err;
-    }
-  }
-
-  // Kalau sampai sini, berarti retry udah habis dan tetap gagal
-  console.error(
-    "Gagal generate poNumber unik setelah beberapa percobaan:",
-    lastError,
-  );
-  return NextResponse.json(
-    { error: "Gagal membuat PO karena konflik nomor urut. Coba lagi." },
-    { status: 500 },
-  );
+  return NextResponse.json(newPo, { status: 201 });
 }
