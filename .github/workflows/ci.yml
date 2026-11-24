@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Hanya untuk `prisma generate` (tidak melakukan koneksi ke database).
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Prisma client di-gitignore (lib/generated/prisma), jadi harus digenerate dulu.
+      - run: npx prisma generate
+
+      - run: npm run lint
+
+      - run: npx tsc --noEmit
