@@ -434,6 +434,21 @@ model RolePermission {
   @@index([tenantId])
 }
 
+// Penomoran dokumen atomik per tenant + jenis dokumen + periode (YYYYMM).
+// Dipakai lib/documentSequence.ts lewat satu statement INSERT .. ON CONFLICT
+// DO UPDATE .. RETURNING (bukan lewat Prisma Client) supaya atomik dan tanpa
+// collision. docType: "PO" | "GR" | "INV" | "TRF".
+model DocumentSequence {
+  tenantId  String
+  docType   String
+  period    String // "YYYYMM"
+  lastValue Int    @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@id([tenantId, docType, period])
+}
+
 model User {
   id        String  @id @default(uuid())
   tenantId  String
@@ -526,4 +541,5 @@ model Tenant{
   stockMovements    StockMovement[]     
   inventoryBalances InventoryBalance[]  
   stockTransfers    StockTransfer[]     
+  documentSequences DocumentSequence[]
 }
