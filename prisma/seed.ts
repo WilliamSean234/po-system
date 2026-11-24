@@ -22,6 +22,7 @@ const PERMISSION_CATALOG = [
   { key: "gr.create", category: "goods_receipt", description: "Input Goods Receipt" },
   // inventory (W5T3)
   { key: "inventory.transfer", category: "inventory", description: "Buat Stock Transfer antar warehouse" },
+  { key: "inventory.rebuild", category: "inventory", description: "Rekonsiliasi/rebuild saldo stok dari ledger (default hanya admin)" },
   // invoice
   { key: "invoice.create", category: "invoice", description: "Input invoice (status DRAFT)" },
   { key: "invoice.submit", category: "invoice", description: "Submit invoice untuk matching" },

@@ -17,7 +17,8 @@ export type PermissionKey =
   | "po.close"
   | "po.cancel"
   | "gr.create"
-  | "inventory.transfer"
+  | "inventory.transfer" // W5T3 — Stock Transfer antar warehouse
+  | "inventory.rebuild" // W5T4 — rebuild/rekonsiliasi InventoryBalance dari ledger
   | "invoice.create"
   | "invoice.submit"
   | "invoice.resolve_dispute"
